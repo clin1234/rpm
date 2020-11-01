@@ -188,7 +188,7 @@ int rpmFileIsCompressed(const char * file, rpmCompressedMagic * compressed)
 	       (magic[4] == 0x5a) && (magic[5] == 0x00)) {
 	/* new style xz (lzma) with magic */
 	*compressed = COMPRESSED_XZ;
-    } else if ((magic[0] == 0x28) && (magic[1] == 0x85) &&
+    } else if ((magic[0] == 0x28) && (magic[1] == 0xB5) &&
 	       (magic[2] == 0x2f)                     ) {
 	*compressed = COMPRESSED_ZSTD;
     } else if ((magic[0] == 'L') && (magic[1] == 'Z') &&
@@ -439,6 +439,8 @@ int rpmMkdirs(const char *root, const char *pathstr)
     
     for (char **d = dirs; *d; d++) {
 	char *path = rpmGetPath(root ? root : "", *d, NULL);
+	if (strstr(path, "%{"))
+	    rpmlog(RPMLOG_WARNING, ("undefined macro(s) in %s: %s\n"), *d, path);
 	if ((rc = rpmioMkpath(path, 0755, -1, -1)) != 0) {
 	    const char *msg = _("failed to create directory");
 	    /* try to be more informative if the failing part was a macro */

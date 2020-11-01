@@ -32,7 +32,6 @@ struct rpmds_s {
     int32_t Count;		/*!< No. of elements */
     unsigned int instance;	/*!< From rpmdb instance? */
     int i;			/*!< Element index. */
-    int nopromote;		/*!< Don't promote Epoch: in rpmdsCompare()? */
     int nrefs;			/*!< Reference count. */
     int *ti;			/*!< Trigger index. */
 };
@@ -42,7 +41,7 @@ struct depinfo_s {
     rpmTagVal evrTag;
     rpmTagVal flagTag;
     rpmTagVal ixTag;
-    char *name;
+    const char *name;
     char abrev;
 };
 
@@ -261,7 +260,6 @@ static rpmds rpmdsCreate(rpmstrPool pool,
     ds->Type = Type;
     ds->Count = Count;
     ds->instance = instance;
-    ds->nopromote = _rpmds_nopromote;
     ds->i = -1;
 
     return rpmdsLink(ds);
@@ -277,7 +275,7 @@ rpmds rpmdsNewPool(rpmstrPool pool, Header h, rpmTagVal tagN, int flags)
 	goto exit;
 
     if (headerGet(h, tagN, &names, HEADERGET_MINMEM)) {
-	struct rpmtd_s evr, flags, tindices;
+	struct rpmtd_s evr, dflags, tindices;
 	rpm_count_t count = rpmtdCount(&names);
 
 	headerGet(h, tagEVR, &evr, HEADERGET_MINMEM);
@@ -286,9 +284,9 @@ rpmds rpmdsNewPool(rpmstrPool pool, Header h, rpmTagVal tagN, int flags)
 	    return NULL;
 	}
 
-	headerGet(h, tagF, &flags, HEADERGET_ALLOC);
-	if (flags.count && flags.count != count) {
-	    rpmtdFreeData(&flags);
+	headerGet(h, tagF, &dflags, HEADERGET_ALLOC);
+	if (dflags.count && dflags.count != count) {
+	    rpmtdFreeData(&dflags);
 	    return NULL;
 	}
 
@@ -304,7 +302,7 @@ rpmds rpmdsNewPool(rpmstrPool pool, Header h, rpmTagVal tagN, int flags)
 
 	ds->N = names.count ? rpmtdToPool(&names, ds->pool) : NULL;
 	ds->EVR = evr.count ? rpmtdToPool(&evr, ds->pool): NULL;
-	ds->Flags = flags.data;
+	ds->Flags = dflags.data;
 	if (tagTi != RPMTAG_NOT_FOUND) {
 	    ds->ti = tindices.data;
 	}
@@ -659,22 +657,12 @@ unsigned int rpmdsInstance(rpmds ds)
 
 int rpmdsNoPromote(const rpmds ds)
 {
-    int nopromote = 0;
-
-    if (ds != NULL)
-	nopromote = ds->nopromote;
-    return nopromote;
+    return 1;
 }
 
 int rpmdsSetNoPromote(rpmds ds, int nopromote)
 {
-    int onopromote = 0;
-
-    if (ds != NULL) {
-	onopromote = ds->nopromote;
-	ds->nopromote = nopromote;
-    }
-    return onopromote;
+    return 1;
 }
 
 rpm_color_t rpmdsColor(const rpmds ds)
@@ -748,7 +736,6 @@ static rpmds rpmdsDup(const rpmds ods)
     size_t nb;
     
     ds->i = ods->i;
-    ds->nopromote = ods->nopromote;
 
     nb = ds->Count * sizeof(*ds->N);
     ds->N = memcpy(xmalloc(nb), ods->N, nb);
@@ -973,108 +960,6 @@ int rpmdsSearch(rpmds ds, rpmds ods)
     }
     return i;
 }
-/**
- * Split EVR into epoch, version, and release components.
- * @param evr		[epoch:]version[-release] string
- * @retval *ep		pointer to epoch
- * @retval *vp		pointer to version
- * @retval *rp		pointer to release
- */
-static
-void parseEVR(char * evr,
-		const char ** ep,
-		const char ** vp,
-		const char ** rp)
-{
-    const char *epoch;
-    const char *version;		/* assume only version is present */
-    const char *release;
-    char *s, *se;
-
-    s = evr;
-    while (*s && risdigit(*s)) s++;	/* s points to epoch terminator */
-    se = strrchr(s, '-');		/* se points to version terminator */
-
-    if (*s == ':') {
-	epoch = evr;
-	*s++ = '\0';
-	version = s;
-	if (*epoch == '\0') epoch = "0";
-    } else {
-	epoch = NULL;	/* XXX disable epoch compare if missing */
-	version = evr;
-    }
-    if (se) {
-	*se++ = '\0';
-	release = se;
-    } else {
-	release = NULL;
-    }
-
-    if (ep) *ep = epoch;
-    if (vp) *vp = version;
-    if (rp) *rp = release;
-}
-
-static inline int rpmdsCompareEVR(const char *AEVR, uint32_t AFlags,
-				  const char *BEVR, uint32_t BFlags,
-				  int nopromote)
-{
-    const char *aE, *aV, *aR, *bE, *bV, *bR;
-    char *aEVR = xstrdup(AEVR);
-    char *bEVR = xstrdup(BEVR);
-    int sense = 0;
-    int result = 0;
-
-    parseEVR(aEVR, &aE, &aV, &aR);
-    parseEVR(bEVR, &bE, &bV, &bR);
-
-    /* Compare {A,B} [epoch:]version[-release] */
-    if (aE && *aE && bE && *bE)
-	sense = rpmvercmp(aE, bE);
-    else if (aE && *aE && atol(aE) > 0) {
-	if (!nopromote) {
-	    sense = 0;
-	} else
-	    sense = 1;
-    } else if (bE && *bE && atol(bE) > 0)
-	sense = -1;
-
-    if (sense == 0) {
-	sense = rpmvercmp(aV, bV);
-	if (sense == 0) {
-	    if (aR && *aR && bR && *bR) {
-		sense = rpmvercmp(aR, bR);
-	    } else {
-		/* always matches if the side with no release has SENSE_EQUAL */
-		if ((aR && *aR && (BFlags & RPMSENSE_EQUAL)) ||
-		    (bR && *bR && (AFlags & RPMSENSE_EQUAL))) {
-		    aEVR = _free(aEVR);
-		    bEVR = _free(bEVR);
-		    result = 1;
-		    goto exit;
-		}
-	    }
-	}
-    }
-
-    /* Detect overlap of {A,B} range. */
-    if (sense < 0 && ((AFlags & RPMSENSE_GREATER) || (BFlags & RPMSENSE_LESS))) {
-	result = 1;
-    } else if (sense > 0 && ((AFlags & RPMSENSE_LESS) || (BFlags & RPMSENSE_GREATER))) {
-	result = 1;
-    } else if (sense == 0 &&
-	(((AFlags & RPMSENSE_EQUAL) && (BFlags & RPMSENSE_EQUAL)) ||
-	 ((AFlags & RPMSENSE_LESS) && (BFlags & RPMSENSE_LESS)) ||
-	 ((AFlags & RPMSENSE_GREATER) && (BFlags & RPMSENSE_GREATER)))) {
-	result = 1;
-    }
-
-exit:
-    free(aEVR);
-    free(bEVR);
-    return result;
-}
 
 int rpmdsCompareIndex(rpmds A, int aix, rpmds B, int bix)
 {
@@ -1110,7 +995,13 @@ int rpmdsCompareIndex(rpmds A, int aix, rpmds B, int bix)
 	result = 1;
     } else {
 	/* Both AEVR and BEVR exist, compare [epoch:]version[-release]. */
-	result = rpmdsCompareEVR(AEVR, AFlags, BEVR, BFlags, B->nopromote);
+	rpmver av = rpmverParse(AEVR);
+	rpmver bv = rpmverParse(BEVR);
+
+	result = rpmverOverlap(av, AFlags, bv, BFlags);
+
+	rpmverFree(av);
+	rpmverFree(bv);
     }
 
 exit:
@@ -1123,7 +1014,7 @@ int rpmdsCompare(const rpmds A, const rpmds B)
 }
 
 int rpmdsMatches(rpmstrPool pool, Header h, int prix,
-		 rpmds req, int selfevr, int nopromote)
+		 rpmds req, int selfevr)
 {
     rpmds provides;
     rpmTagVal tag = RPMTAG_PROVIDENAME;
@@ -1134,8 +1025,6 @@ int rpmdsMatches(rpmstrPool pool, Header h, int prix,
 	provides = rpmdsThisPool(pool, h, tag, RPMSENSE_EQUAL);
     else
 	provides = rpmdsNewPool(pool, h, tag, 0);
-
-    rpmdsSetNoPromote(provides, nopromote);
 
     /*
      * For a self-provide and indexed provide, we only need one comparison.
@@ -1161,17 +1050,17 @@ int rpmdsMatches(rpmstrPool pool, Header h, int prix,
 
 int rpmdsMatchesDep (const Header h, int ix, const rpmds req, int nopromote)
 {
-    return rpmdsMatches(NULL, h, ix, req, 0, nopromote);
+    return rpmdsMatches(NULL, h, ix, req, 0);
 }
 
 int rpmdsAnyMatchesDep (const Header h, const rpmds req, int nopromote)
 {
-    return rpmdsMatches(NULL, h, -1, req, 0, nopromote);
+    return rpmdsMatches(NULL, h, -1, req, 0);
 }
 
 int rpmdsNVRMatchesDep(const Header h, const rpmds req, int nopromote)
 {
-    return rpmdsMatches(NULL, h, -1, req, 1, nopromote);
+    return rpmdsMatches(NULL, h, -1, req, 1);
 }
 
 /**
@@ -1249,6 +1138,9 @@ static const struct rpmlibProvides_s rpmlibProvides[] = {
     { "rpmlib(RichDependencies)",    "4.12.0-1",
 	(		RPMSENSE_EQUAL),
     N_("support for rich dependencies.") },
+    { "rpmlib(DynamicBuildRequires)", "4.15.0-1",
+	(RPMSENSE_RPMLIB|RPMSENSE_EQUAL),
+    N_("support for dynamic buildrequires.") },
 #ifdef HAVE_ZSTD
     { "rpmlib(PayloadIsZstd)",		"5.4.18-1",
 	(RPMSENSE_RPMLIB|RPMSENSE_EQUAL),

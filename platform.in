@@ -59,12 +59,24 @@
 
 %_smp_mflags -j%{_smp_build_ncpus}
 
-# Enable LTO optimization with a maximal parallelism
-%_lto_cflags -flto=%{_smp_build_ncpus}
+# Maximum number of threads to use when building, 0 for unlimited
+#%_smp_nthreads_max 0
+
+%_smp_build_nthreads %{_smp_build_ncpus}
 
 #==============================================================================
 # ---- Build policy macros.
 #
+#---------------------------------------------------------------------
+#	Expanded at beginning of %install scriptlet.
+#
+
+%__spec_install_pre %{___build_pre}\
+    %{__rm} -rf "%{buildroot}"\
+    %{__mkdir_p} "%{dirname:%{buildroot}}"\
+    %{__mkdir} "%{buildroot}"\
+%{nil}
+
 #---------------------------------------------------------------------
 #	Expanded at end of %install scriptlet.
 #

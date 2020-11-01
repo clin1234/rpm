@@ -12,7 +12,6 @@
 #include <rpm/rpmlog.h>
 #include <rpm/rpmurl.h>
 #include <rpm/rpmfileutil.h>
-#include "rpmio/rpmlua.h"
 #include "build/rpmbuild_internal.h"
 #include "build/rpmbuild_misc.h"
 #include "debug.h"
@@ -197,30 +196,6 @@ static int parseNoSource(rpmSpec spec, const char * field, rpmTagVal tag)
     return 0;
 }
 
-static void addLuaSource(const struct Source *p)
-{
-#ifdef WITH_LUA
-    rpmlua lua = NULL; /* global state */
-    const char * what = (p->flags & RPMBUILD_ISPATCH) ? "patches" : "sources";
-    rpmluaPushTable(lua, what);
-    rpmluav var = rpmluavNew();
-    rpmluavSetListMode(var, 1);
-    rpmluavSetValue(var, RPMLUAV_STRING, p->path);
-    rpmluaSetVar(lua, var);
-    rpmluavFree(var);
-    rpmluaPop(lua);
-
-    what = (p->flags & RPMBUILD_ISPATCH) ? "patch_nums" : "source_nums";
-    rpmluaPushTable(lua, what);
-    var = rpmluavNew();
-    rpmluavSetListMode(var, 1);
-    rpmluavSetValueNum(var, p->num);
-    rpmluaSetVar(lua, var);
-    rpmluavFree(var);
-    rpmluaPop(lua);
-#endif
-}
-
 static int tryDownload(const struct Source *p)
 {
     int rc = 0;
@@ -346,7 +321,9 @@ int addSource(rpmSpec spec, int specline, const char *srcname, rpmTagVal tag)
     rpmPushMacro(spec->macros, buf, NULL, p->fullSource, RMIL_SPEC);
     free(buf);
 
-    addLuaSource(p);
+#ifdef WITH_LUA
+    addLuaSource(spec->lua, p);
+#endif
 
     if (!nofetch && tryDownload(p))
 	return RPMRC_FAIL;
@@ -363,6 +340,7 @@ typedef const struct tokenBits_s {
  */
 static struct tokenBits_s const installScriptBits[] = {
     { "interp",		RPMSENSE_INTERP },
+    { "meta",		RPMSENSE_META },
     { "preun",		RPMSENSE_SCRIPT_PREUN },
     { "pre",		RPMSENSE_SCRIPT_PRE },
     { "postun",		RPMSENSE_SCRIPT_POSTUN },
@@ -893,6 +871,7 @@ static rpmRC handlePreambleTag(rpmSpec spec, Package pkg, rpmTagVal tag,
 	SINGLE_TOKEN_ONLY;
 	if (addIcon(pkg, field))
 	    goto exit;
+	spec->numSources++;
 	break;
     case RPMTAG_NOSOURCE:
     case RPMTAG_NOPATCH:
@@ -1003,8 +982,6 @@ typedef const struct PreambleRec_s {
     const char * token;
 } * PreambleRec;
 
-#define LEN_AND_STR(_tag) (sizeof(_tag)-1), _tag
-
 static struct PreambleRec_s const preambleList[] = {
     {RPMTAG_NAME,		0, 0, 1, LEN_AND_STR("name")},
     {RPMTAG_VERSION,		0, 0, 1, LEN_AND_STR("version")},
@@ -1111,8 +1088,7 @@ static int findPreambleTag(rpmSpec spec,rpmTagVal * tag,
     }
 
     *tag = p->tag;
-    if (p->ismacro && macro)
-	*macro = p->token;
+    *macro = p->ismacro ? p->token : NULL;
     return 0;
 }
 

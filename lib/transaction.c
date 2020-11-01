@@ -6,6 +6,18 @@
 
 #include <inttypes.h>
 #include <libgen.h>
+#include <errno.h>
+#include <sys/statvfs.h>
+#include <fcntl.h>
+
+/* duplicated from cpio.c */
+#if MAJOR_IN_MKDEV
+#include <sys/mkdev.h>
+#elif MAJOR_IN_SYSMACROS
+#include <sys/sysmacros.h>
+#else
+#include <sys/types.h> /* already included from system.h */
+#endif
 
 #include <rpm/rpmlib.h>		/* rpmMachineScore, rpmReadPackageFile */
 #include <rpm/rpmmacro.h>	/* XXX for rpmExpand */
@@ -31,25 +43,6 @@
 
 #include "lib/rpmplugins.h"
 
-/* XXX FIXME: merge with existing (broken?) tests in system.h */
-/* portability fiddles */
-#if STATFS_IN_SYS_STATVFS
-#include <sys/statvfs.h>
-
-#else
-# if STATFS_IN_SYS_VFS
-#  include <sys/vfs.h>
-# else
-#  if STATFS_IN_SYS_MOUNT
-#   include <sys/mount.h>
-#  else
-#   if STATFS_IN_SYS_STATFS
-#    include <sys/statfs.h>
-#   endif
-#  endif
-# endif
-#endif
-
 #include "debug.h"
 
 struct diskspaceInfo_s {
@@ -64,6 +57,8 @@ struct diskspaceInfo_s {
     int64_t oineeded;	/*!< Bookkeeping to avoid duplicate reports */
     int64_t bdelta;	/*!< Delta for temporary space need on updates */
     int64_t idelta;	/*!< Delta for temporary inode need on updates */
+
+    int rotational;	/*!< Rotational media? */
 };
 
 /* Adjust for root only reserved space. On linux e2fs, this is 5%. */
@@ -109,6 +104,27 @@ static char *getMntPoint(const char *dirName, dev_t dev)
     return res;
 }
 
+static int getRotational(const char *dirName, dev_t dev)
+{
+    int rotational = 1;	/* Be a good pessimist, assume the worst */
+#if defined(__linux__)
+    char *devpath = NULL;
+    FILE *f = NULL;
+
+    rasprintf(&devpath, "/sys/dev/block/%d:%d/queue/rotational",
+			major(dev), minor(dev));
+    if ((f = fopen(devpath, "r")) != NULL) {
+	int v;
+	if (fscanf(f, "%d", &v) == 1)
+	    rotational = (v == 1);
+	fclose(f);
+    }
+    free(devpath);
+#endif
+
+    return rotational;
+}
+
 static int rpmtsInitDSI(const rpmts ts)
 {
     ts->dsi = _free(ts->dsi);
@@ -122,25 +138,10 @@ static rpmDiskSpaceInfo rpmtsCreateDSI(const rpmts ts, dev_t dev,
     rpmDiskSpaceInfo dsi;
     struct stat sb;
     int rc;
-
-#if STATFS_IN_SYS_STATVFS
     struct statvfs sfb;
+
     memset(&sfb, 0, sizeof(sfb));
     rc = statvfs(dirName, &sfb);
-#else
-    struct statfs sfb;
-    memset(&sfb, 0, sizeof(sfb));
-#  if STAT_STATFS4
-/* This platform has the 4-argument version of the statfs call.  The last two
- * should be the size of struct statfs and 0, respectively.  The 0 is the
- * filesystem type, and is always 0 when statfs is called on a mounted
- * filesystem, as we're doing.
- */
-    rc = statfs(dirName, &sfb, sizeof(sfb), 0);
-#  else
-    rc = statfs(dirName, &sfb);
-#  endif
-#endif
     if (rc)
 	return NULL;
 
@@ -160,15 +161,8 @@ static rpmDiskSpaceInfo rpmtsCreateDSI(const rpmts ts, dev_t dev,
 	dsi->bsize = 512;       /* we need a bsize */
     dsi->bneeded = 0;
     dsi->ineeded = 0;
-#ifdef STATFS_HAS_F_BAVAIL
     dsi->bavail = (sfb.f_flag & ST_RDONLY) ? 0 : sfb.f_bavail;
-#else
-/* FIXME: the statfs struct doesn't have a member to tell how many blocks are
- * available for non-superusers.  f_blocks - f_bfree is probably too big, but
- * it's about all we can do.
- */
-    dsi->bavail = sfb.f_blocks - sfb.f_bfree;
-#endif
+
     /* XXX Avoid FAT and other file systems that have not inodes. */
     /* XXX assigning negative value to unsigned type */
     dsi->iavail = !(sfb.f_ffree == 0 && sfb.f_files == 0)
@@ -176,6 +170,9 @@ static rpmDiskSpaceInfo rpmtsCreateDSI(const rpmts ts, dev_t dev,
 
     /* Find mount point belonging to this device number */
     dsi->mntPoint = getMntPoint(dirName, dsi->dev);
+
+    /* Initialized on demand */
+    dsi->rotational = -1;
 
     /* normalize block size to 4096 bytes if it is too big. */
     if (dsi->bsize > 4096) {
@@ -188,9 +185,9 @@ static rpmDiskSpaceInfo rpmtsCreateDSI(const rpmts ts, dev_t dev,
     }
 
     rpmlog(RPMLOG_DEBUG,
-	   "0x%08x %8" PRId64 " %12" PRId64 " %12" PRId64" %s\n",
+	   "0x%08x %8" PRId64 " %12" PRId64 " %12" PRId64" rotational:%d %s\n",
 	   (unsigned) dsi->dev, dsi->bsize,
-	   dsi->bavail, dsi->iavail,
+	   dsi->bavail, dsi->iavail, dsi->rotational,
 	   dsi->mntPoint);
     return dsi;
 }
@@ -208,6 +205,22 @@ static rpmDiskSpaceInfo rpmtsGetDSI(const rpmts ts, dev_t dev,
 	}
     }
     return dsi;
+}
+
+static int rpmtsGetDSIRotational(rpmts ts)
+{
+    int rc = 1;
+    int nrot = 0;
+    rpmDiskSpaceInfo dsi = ts->dsi;
+    while (dsi && dsi->bsize != 0) {
+	if (dsi->rotational < 0)
+	    dsi->rotational = getRotational(dsi->mntPoint, dsi->dev);
+	nrot += dsi->rotational;
+	dsi++;
+    }
+    if (dsi != ts->dsi && nrot == 0)
+	rc = 0;
+    return rc;
 }
 
 static void rpmtsUpdateDSI(const rpmts ts, dev_t dev, const char *dirName,
@@ -479,13 +492,6 @@ static void handleInstInstalledFile(const rpmts ts, rpmte p, rpmfiles fi, int fx
 	rpmfsSetAction(fs, fx, action);
     }
 
-    /* Skip already existing files - if 'minimize_writes' is set. */
-    if ((!isCfgFile) && (rpmfsGetAction(fs, fx) == FA_UNKNOWN)  && ts->min_writes) {
-	if (rpmfileContentsEqual(otherFi, ofx, fi, fx)) {
-	   rpmfsSetAction(fs, fx, FA_TOUCH);
-	}
-    }
-
     otherFileSize = rpmfilesFSize(otherFi, ofx);
 
     /* Only account for the last file of a hardlink set */
@@ -495,6 +501,16 @@ static void handleInstInstalledFile(const rpmts ts, rpmte p, rpmfiles fi, int fx
 
     /* Add one to make sure the size is not zero */
     rpmfilesSetFReplacedSize(fi, fx, otherFileSize + 1);
+
+    /* Just touch already existing files if minimize_writes is enabled */
+    if (ts->min_writes) {
+	if ((!isCfgFile) && (rpmfsGetAction(fs, fx) == FA_UNKNOWN)) {
+	    /* XXX fsm can't handle FA_TOUCH of hardlinked files */
+	    int nolinks = (nlink == 1 && rpmfilesFNlink(fi, fx) == 1);
+	    if (nolinks && rpmfileContentsEqual(otherFi, ofx, fi, fx))
+	       rpmfsSetAction(fs, fx, FA_TOUCH);
+	}
+    }
 }
 
 /**
@@ -720,7 +736,7 @@ static void ensureOlder(rpmstrPool tspool, const rpmte p, const Header h)
 
     req = rpmdsSinglePool(tspool, RPMTAG_REQUIRENAME,
 			  rpmteN(p), rpmteEVR(p), reqFlags);
-    if (rpmdsMatches(tspool, h, -1, req, 1, _rpmds_nopromote) == 0) {
+    if (rpmdsMatches(tspool, h, -1, req, 1) == 0) {
 	char * altNEVR = headerGetAsString(h, RPMTAG_NEVRA);
 	rpmteAddProblem(p, RPMPROB_OLDPACKAGE, altNEVR, NULL,
 			headerGetInstance(h));
@@ -809,6 +825,7 @@ static void skipInstallFiles(const rpmts ts, rpmfiles files, rpmfs fs)
     rpm_color_t FColor;
     int noConfigs = (rpmtsFlags(ts) & RPMTRANS_FLAG_NOCONFIGS);
     int noDocs = (rpmtsFlags(ts) & RPMTRANS_FLAG_NODOCS);
+    int noArtifacts = (rpmtsFlags(ts) & RPMTRANS_FLAG_NOARTIFACTS);
     int * drc;
     char * dff;
     int dc;
@@ -904,6 +921,13 @@ static void skipInstallFiles(const rpmts ts, rpmfiles files, rpmfs fs)
 	 * Skip documentation if requested.
 	 */
 	if (noDocs && (rpmfiFFlags(fi) & RPMFILE_DOC)) {
+	    drc[ix]--;	dff[ix] = 1;
+	    rpmfsSetAction(fs, i, FA_SKIPNSTATE);
+	    continue;
+	}
+
+	/* Skip artifacts if requested. */
+	if (noArtifacts && (rpmfiFFlags(fi) & RPMFILE_ARTIFACT)) {
 	    drc[ix]--;	dff[ix] = 1;
 	    rpmfsSetAction(fs, i, FA_SKIPNSTATE);
 	    continue;
@@ -1226,8 +1250,10 @@ static int vfyCb(struct rpmsinfo_s *sinfo, void *cbdata)
 	 */
 	if (!(vd->vfylevel & RPMSIG_SIGNATURE_TYPE))
 	    sinfo->rc = RPMRC_OK;
+	/* fallthrough */
     default:
-	vd->msg = rpmsinfoMsg(sinfo);
+	if (sinfo->rc)
+	    vd->msg = rpmsinfoMsg(sinfo);
 	break;
     }
     return (sinfo->rc == 0);
@@ -1290,6 +1316,64 @@ static int verifyPackageFiles(rpmts ts, rpm_loff_t total)
     return rc;
 }
 
+static void checkAdded(rpmts ts, rpmprobFilterFlags probFilter, rpmte p)
+{
+    if (!(probFilter & RPMPROB_FILTER_IGNOREARCH) && badArch(rpmteA(p)))
+	rpmteAddProblem(p, RPMPROB_BADARCH, rpmteA(p), NULL, 0);
+
+    if (!(probFilter & RPMPROB_FILTER_IGNOREOS) && badOs(rpmteO(p)))
+	rpmteAddProblem(p, RPMPROB_BADOS, rpmteO(p), NULL, 0);
+
+    if (!(probFilter & RPMPROB_FILTER_OLDPACKAGE)) {
+	rpmstrPool tspool = rpmtsPool(ts);
+	Header h;
+	rpmdbMatchIterator mi;
+	mi = rpmtsInitIterator(ts, RPMDBI_NAME, rpmteN(p), 0);
+	while ((h = rpmdbNextIterator(mi)) != NULL)
+	    ensureOlder(tspool, p, h);
+	rpmdbFreeIterator(mi);
+    }
+
+    if (!(probFilter & RPMPROB_FILTER_REPLACEPKG) && rpmteAddOp(p) != RPMTE_REINSTALL) {
+	Header h;
+	rpmdbMatchIterator mi;
+	mi = rpmtsInitIterator(ts, RPMDBI_NAME, rpmteN(p), 0);
+	rpmdbSetIteratorRE(mi, RPMTAG_EPOCH, RPMMIRE_STRCMP, rpmteE(p));
+	rpmdbSetIteratorRE(mi, RPMTAG_VERSION, RPMMIRE_STRCMP, rpmteV(p));
+	rpmdbSetIteratorRE(mi, RPMTAG_RELEASE, RPMMIRE_STRCMP, rpmteR(p));
+	if (rpmtsColor(ts)) {
+	    rpmdbSetIteratorRE(mi, RPMTAG_ARCH, RPMMIRE_STRCMP, rpmteA(p));
+	    rpmdbSetIteratorRE(mi, RPMTAG_OS, RPMMIRE_STRCMP, rpmteO(p));
+	}
+
+	if ((h = rpmdbNextIterator(mi)) != NULL) {
+	    rpmteAddProblem(p, RPMPROB_PKG_INSTALLED, NULL, NULL,
+			    headerGetInstance(h));
+	}
+	rpmdbFreeIterator(mi);
+    }
+
+    if (!(probFilter & RPMPROB_FILTER_FORCERELOCATE))
+	rpmteAddRelocProblems(p);
+}
+
+static void checkRemoved(rpmts ts, rpmprobFilterFlags probFilter, rpmte p)
+{
+    unsigned int offset = rpmteDBInstance(p);
+    int found = 0;
+    rpmdbMatchIterator mi;
+
+    mi = rpmtsInitIterator(ts, RPMDBI_PACKAGES, &offset, sizeof(offset));
+    while (rpmdbNextIterator(mi)) {
+	found = 1;
+	break;
+    }
+    rpmdbFreeIterator(mi);
+
+    if (!found)
+	rpmteAddProblem(p, RPMPROB_PKG_INSTALLED, NULL, NULL, 0);
+}
+
 /*
  * For packages being installed:
  * - verify package arch/os.
@@ -1297,10 +1381,10 @@ static int verifyPackageFiles(rpmts ts, rpm_loff_t total)
  */
 static rpmps checkProblems(rpmts ts)
 {
-    rpm_color_t tscolor = rpmtsColor(ts);
     rpmprobFilterFlags probFilter = rpmtsFilterFlags(ts);
-    rpmstrPool tspool = rpmtsPool(ts);
-    rpm_loff_t npkgs = countPkgs(ts, TR_ADDED);
+    rpmElementTypes etypes = (TR_ADDED|TR_REMOVED);
+    rpm_loff_t npkgs = countPkgs(ts, etypes);
+    rpm_loff_t ninst = 0;
     rpmtsi pi;
     rpmte p;
 
@@ -1311,49 +1395,23 @@ static rpmps checkProblems(rpmts ts)
     /* XXX Only added packages need be checked. */
     rpmlog(RPMLOG_DEBUG, "sanity checking %lu elements\n", npkgs);
     pi = rpmtsiInit(ts);
-    while ((p = rpmtsiNext(pi, TR_ADDED)) != NULL) {
-
-	if (!(probFilter & RPMPROB_FILTER_IGNOREARCH) && badArch(rpmteA(p)))
-	    rpmteAddProblem(p, RPMPROB_BADARCH, rpmteA(p), NULL, 0);
-
-	if (!(probFilter & RPMPROB_FILTER_IGNOREOS) && badOs(rpmteO(p)))
-	    rpmteAddProblem(p, RPMPROB_BADOS, rpmteO(p), NULL, 0);
-
-	if (!(probFilter & RPMPROB_FILTER_OLDPACKAGE)) {
-	    Header h;
-	    rpmdbMatchIterator mi;
-	    mi = rpmtsInitIterator(ts, RPMDBI_NAME, rpmteN(p), 0);
-	    while ((h = rpmdbNextIterator(mi)) != NULL)
-		ensureOlder(tspool, p, h);
-	    rpmdbFreeIterator(mi);
+    while ((p = rpmtsiNext(pi, etypes)) != NULL) {
+	switch (rpmteType(p)) {
+	case TR_ADDED:
+	    checkAdded(ts, probFilter, p);
+	    ninst++;
+	    break;
+	case TR_REMOVED:
+	    checkRemoved(ts, probFilter, p);
+	    break;
+	default:
+	    break;
 	}
-
-	if (!(probFilter & RPMPROB_FILTER_REPLACEPKG)) {
-	    Header h;
-	    rpmdbMatchIterator mi;
-	    mi = rpmtsPrunedIterator(ts, RPMDBI_NAME, rpmteN(p), 1);
-	    rpmdbSetIteratorRE(mi, RPMTAG_EPOCH, RPMMIRE_STRCMP, rpmteE(p));
-	    rpmdbSetIteratorRE(mi, RPMTAG_VERSION, RPMMIRE_STRCMP, rpmteV(p));
-	    rpmdbSetIteratorRE(mi, RPMTAG_RELEASE, RPMMIRE_STRCMP, rpmteR(p));
-	    if (tscolor) {
-		rpmdbSetIteratorRE(mi, RPMTAG_ARCH, RPMMIRE_STRCMP, rpmteA(p));
-		rpmdbSetIteratorRE(mi, RPMTAG_OS, RPMMIRE_STRCMP, rpmteO(p));
-	    }
-
-	    if ((h = rpmdbNextIterator(mi)) != NULL) {
-		rpmteAddProblem(p, RPMPROB_PKG_INSTALLED, NULL, NULL,
-				headerGetInstance(h));
-	    }
-	    rpmdbFreeIterator(mi);
-	}
-
-	if (!(probFilter & RPMPROB_FILTER_FORCERELOCATE))
-	    rpmteAddRelocProblems(p);
     }
     rpmtsiFree(pi);
 
-    if (rpmtsVfyLevel(ts) && !(probFilter & RPMPROB_FILTER_VERIFY))
-	verifyPackageFiles(ts, npkgs);
+    if (ninst > 0 && rpmtsVfyLevel(ts) && !(probFilter & RPMPROB_FILTER_VERIFY))
+	verifyPackageFiles(ts, ninst);
 
 exit:
     return rpmtsProblems(ts);
@@ -1413,8 +1471,40 @@ static int rpmtsSetup(rpmts ts, rpmprobFilterFlags ignoreSet)
     return 0;
 }
 
+/* XXX _minimize_writes is not safe for mass-consumption yet */
+#if 0
+/* Push a macro with current value or default if no previous value exists */
+static void ensureMacro(const char *name, const char *def)
+{
+    char *s = rpmExpand("%{?", name, "}", NULL);
+
+    if (*s != '\0' && atoi(s) >= 0)
+	def = s;
+
+    rpmPushMacro(NULL, name, NULL, def, 0);
+    free(s);
+}
+
+/* Enable / disable optimizations for solid state disks */
+static void setSSD(int enable)
+{
+    if (enable) {
+	rpmlog(RPMLOG_DEBUG, "optimizing for non-rotational disks\n");
+	ensureMacro("_minimize_writes", "1");
+    } else {
+	rpmPopMacro(NULL, "_minimize_writes");
+    }
+}
+#else
+static void setSSD(int enable)
+{
+}
+#endif
+
 static int rpmtsFinish(rpmts ts)
 {
+    if (rpmtsGetDSIRotational(ts) == 0)
+	setSSD(0);
     rpmtsFreeDSI(ts);
     return rpmChrootSet(NULL);
 }
@@ -1513,6 +1603,9 @@ static int rpmtsPrepare(rpmts ts)
 	rpmtsiFree(pi);
     }
 
+    if (rpmtsGetDSIRotational(ts) == 0)
+	setSSD(1);
+
 exit:
     fpCacheFree(fpc);
     return rc;
@@ -1600,9 +1693,12 @@ rpmRC runScript(rpmts ts, rpmte te, Header h, ARGV_const_t prefixes,
     FD_t sfd = NULL;
     int warn_only = !(rpmScriptFlags(script) & RPMSCRIPT_FLAG_CRITICAL);
 
+    if (rpmChrootIn())
+	return RPMRC_FAIL;
+
     /* Create a temporary transaction element for triggers from rpmdb */
     if (te == NULL) {
-	te = rpmteNew(ts, h, TR_RPMDB, NULL, NULL);
+	te = rpmteNew(ts, h, TR_RPMDB, NULL, NULL, 0);
 	rpmteSetHeader(te, h);
     }
 
@@ -1630,6 +1726,8 @@ rpmRC runScript(rpmts ts, rpmte te, Header h, ARGV_const_t prefixes,
 	}
 	rpmtsNotify(ts, te, RPMCALLBACK_SCRIPT_ERROR, stag, rc);
     }
+
+    rpmChrootOut();
 
     if (te != xte)
 	rpmteFree(te);

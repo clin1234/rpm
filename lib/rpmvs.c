@@ -40,6 +40,7 @@ static const struct vfytag_s rpmvfytags[] = {
     {	RPMSIGTAG_LONGARCHIVESIZE,	RPM_INT64_TYPE,		1,	8, },
     {	RPMTAG_SHA256HEADER,		RPM_STRING_TYPE,	1,	65, },
     {	RPMTAG_PAYLOADDIGEST,		RPM_STRING_ARRAY_TYPE,	0,	0, },
+    {	RPMTAG_PAYLOADDIGESTALT,	RPM_STRING_ARRAY_TYPE,	0,	0, },
     { 0 } /* sentinel */
 };
 
@@ -89,6 +90,9 @@ static const struct vfyinfo_s rpmvfyitems[] = {
     {	RPMTAG_PAYLOADDIGEST,		0,
 	{ RPMSIG_DIGEST_TYPE,		RPMVSF_NOPAYLOAD,
 	(RPMSIG_PAYLOAD),		PGPHASHALGO_SHA256, 0, }, },
+    {	RPMTAG_PAYLOADDIGESTALT,	0,
+	{ RPMSIG_DIGEST_TYPE,		RPMVSF_NOPAYLOAD,
+	(RPMSIG_PAYLOAD),		PGPHASHALGO_SHA256, 0, 1, }, },
     { 0 } /* sentinel */
 };
 
@@ -257,9 +261,10 @@ const char *rpmsinfoDescr(struct rpmsinfo_s *sinfo)
     if (sinfo->descr == NULL) {
 	switch (sinfo->type) {
 	case RPMSIG_DIGEST_TYPE:
-	    rasprintf(&sinfo->descr, _("%s%s %s"),
+	    rasprintf(&sinfo->descr, _("%s%s%s %s"),
 		    rangeName(sinfo->range),
 		    pgpValString(PGPVAL_HASHALGO, sinfo->hashalgo),
+		    sinfo->alt ? " ALT" : "",
 		    _("digest"));
 	    break;
 	case RPMSIG_SIGNATURE_TYPE:
@@ -269,9 +274,10 @@ const char *rpmsinfoDescr(struct rpmsinfo_s *sinfo)
 			rangeName(sinfo->range), t);
 		free(t);
 	    } else {
-		rasprintf(&sinfo->descr, _("%s%s %s"),
+		rasprintf(&sinfo->descr, _("%s%s%s %s"),
 			rangeName(sinfo->range),
 			pgpValString(PGPVAL_PUBKEYALGO, sinfo->sigalgo),
+			sinfo->alt ? " ALT" : "",
 			_("signature"));
 	    }
 	    break;
@@ -429,6 +435,17 @@ static int sinfoCmp(const void *a, const void *b)
     return rc;
 }
 
+
+static const struct rpmsinfo_s *getAlt(const struct rpmvs_s *vs, const struct rpmsinfo_s *sinfo)
+{
+    for (int i = 0; i < vs->nsigs; i++) {
+	const struct rpmsinfo_s *alt = &vs->sigs[i];
+	if ((sinfo->id != alt->id) && (sinfo->disabler == alt->disabler))
+	    return alt;
+    }
+    return NULL;
+}
+
 int rpmvsVerify(struct rpmvs_s *sis, int type,
 		       rpmsinfoCb cb, void *cbdata)
 {
@@ -465,6 +482,13 @@ int rpmvsVerify(struct rpmvs_s *sis, int type,
 	struct rpmsinfo_s *sinfo = &sis->sigs[i];
 	int strength = (sinfo->type | sinfo->strength);
 	int required = 0;
+
+	/* Ignore failure if an alternative exists and verifies ok */
+	if (sinfo->rc == RPMRC_FAIL) {
+	    const struct rpmsinfo_s * alt = getAlt(sis, sinfo);
+	    if (alt && alt->rc == RPMRC_OK)
+		sinfo->rc = RPMRC_NOTFOUND;
+	}
 
 	if (sis->vfylevel & strength & RPMSIG_DIGEST_TYPE) {
 	    int missing = (range & ~verified[RPMSIG_DIGEST_TYPE]);

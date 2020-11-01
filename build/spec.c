@@ -5,8 +5,6 @@
 
 #include "system.h"
 #include <errno.h>
-#include <netdb.h>
-#include <time.h>
 
 #include <rpm/header.h>
 #include <rpm/rpmds.h>
@@ -15,7 +13,6 @@
 #include <rpm/rpmlog.h>
 #include <rpm/rpmfileutil.h>
 
-#include "rpmio/rpmlua.h"
 #include "lib/rpmfi_internal.h"		/* rpmfiles stuff */
 #include "build/rpmbuild_internal.h"
 
@@ -43,12 +40,6 @@ struct TriggerFileEntry * freeTriggerFiles(struct TriggerFileEntry * p)
     return NULL;
 }
 
-/**
- * Destroy source component chain.
- * @param s		source component chain
- * @return		NULL always
- */
-static inline
 struct Source * freeSources(struct Source * s)
 {
     struct Source *r, *t = s;
@@ -146,6 +137,7 @@ Package freePackage(Package pkg)
 {
     if (pkg == NULL) return NULL;
     
+    pkg->filename = _free(pkg->filename);
     pkg->preInFile = _free(pkg->preInFile);
     pkg->postInFile = _free(pkg->postInFile);
     pkg->preUnFile = _free(pkg->preUnFile);
@@ -204,59 +196,11 @@ rpmds * packageDependencies(Package pkg, rpmTagVal tag)
     return NULL;
 }
 
-static rpm_time_t getBuildTime(void)
-{
-    rpm_time_t buildTime = 0;
-    char *srcdate;
-    time_t epoch;
-    char *endptr;
-
-    srcdate = getenv("SOURCE_DATE_EPOCH");
-    if (srcdate) {
-        errno = 0;
-        epoch = strtol(srcdate, &endptr, 10);
-        if (srcdate == endptr || *endptr || errno != 0)
-            rpmlog(RPMLOG_ERR, _("unable to parse SOURCE_DATE_EPOCH\n"));
-        else
-            buildTime = (int32_t) epoch;
-    } else
-        buildTime = (int32_t) time(NULL);
-
-    return buildTime;
-}
-
-static char * buildHost(void)
-{
-    char* hostname;
-    struct hostent *hbn;
-    char *bhMacro;
-
-    bhMacro = rpmExpand("%{?_buildhost}", NULL);
-    if (strcmp(bhMacro, "") != 0) {
-        rasprintf(&hostname, "%s", bhMacro);
-    } else {
-        hostname = rcalloc(1024, sizeof(*hostname));
-        (void) gethostname(hostname, 1024);
-        hbn = gethostbyname(hostname);
-        if (hbn)
-            strcpy(hostname, hbn->h_name);
-        else
-            rpmlog(RPMLOG_WARNING,
-                    _("Could not canonicalize hostname: %s\n"), hostname);
-    }
-    free(bhMacro);
-    return(hostname);
-}
-
-
 rpmSpec newSpec(void)
 {
     rpmSpec spec = xcalloc(1, sizeof(*spec));
     
     spec->specFile = NULL;
-
-    spec->buildHost = buildHost();
-    spec->buildTime = getBuildTime();
 
     spec->fileStack = NULL;
     spec->lbufSize = BUFSIZ * 10;
@@ -269,6 +213,8 @@ rpmSpec newSpec(void)
     spec->readStack = xcalloc(1, sizeof(*spec->readStack));
     spec->readStack->next = NULL;
     spec->readStack->reading = 1;
+    spec->readStack->lastConditional = lineTypes;
+    spec->readStack->readable = 1;
 
     spec->rootDir = NULL;
     spec->prep = NULL;
@@ -304,15 +250,7 @@ rpmSpec newSpec(void)
     spec->pool = rpmstrPoolCreate();
     
 #ifdef WITH_LUA
-    /* make sure patches and sources tables always exist */
-    rpmlua lua = NULL; /* global state */
-    const char * luavars[] = { "patches", "sources",
-			       "patch_nums", "source_nums", NULL, };
-    for (const char **vp = luavars; vp && *vp; vp++) {
-	rpmluaDelVar(lua, *vp);
-	rpmluaPushTable(lua, *vp);
-	rpmluaPop(lua);
-    }
+    spec->lua = specLuaInit(spec);
 #endif
     return spec;
 }
@@ -328,6 +266,7 @@ rpmSpec rpmSpecFree(rpmSpec spec)
     spec->check = freeStringBuf(spec->check);
     spec->clean = freeStringBuf(spec->clean);
     spec->parsed = freeStringBuf(spec->parsed);
+    spec->buildrequires = freeStringBuf(spec->buildrequires);
 
     spec->buildRoot = _free(spec->buildRoot);
     spec->buildSubdir = _free(spec->buildSubdir);
@@ -362,9 +301,7 @@ rpmSpec rpmSpecFree(rpmSpec spec)
 #ifdef WITH_LUA
     // only destroy lua tables if there are no BASpecs left
     if (spec->recursing || spec->BACount == 0) {
-    rpmlua lua = NULL; /* global state */
-    rpmluaDelVar(lua, "patches");
-    rpmluaDelVar(lua, "sources");	
+	spec->lua = specLuaFini(spec);
     }
 #endif
 

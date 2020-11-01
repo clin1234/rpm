@@ -71,6 +71,8 @@ void headerMergeLegacySigs(Header h, Header sigh)
 	case RPMSIGTAG_FILESIGNATURELENGTH:
 	    td.tag = RPMTAG_FILESIGNATURELENGTH;
 	    break;
+	case RPMSIGTAG_VERITYSIGNATURES:
+	case RPMSIGTAG_VERITYSIGNATUREALGO:
 	case RPMSIGTAG_SHA1:
 	case RPMSIGTAG_SHA256:
 	case RPMSIGTAG_DSA:
@@ -275,6 +277,7 @@ exit:
 static
 void applyRetrofits(Header h)
 {
+    int v3 = 0;
     /*
      * Make sure that either RPMTAG_SOURCERPM or RPMTAG_SOURCEPACKAGE
      * is set. Use a simple heuristic to find the type if both are unset.
@@ -302,10 +305,18 @@ void applyRetrofits(Header h)
      * packages might have been built with --nodirtokens, test and handle
      * the non-compressed filelist case separately.
      */
-    if (!headerIsEntry(h, RPMTAG_HEADERIMMUTABLE))
+    if (!headerIsEntry(h, RPMTAG_HEADERIMMUTABLE)) {
+	v3 = 1;
 	headerConvert(h, HEADERCONV_RETROFIT_V3);
-    else if (headerIsEntry(h, RPMTAG_OLDFILENAMES))
+    } else if (headerIsEntry(h, RPMTAG_OLDFILENAMES)) {
 	headerConvert(h, HEADERCONV_COMPRESSFILELIST);
+	v3 = 1;
+    }
+    if (v3) {
+	char *s = headerGetAsString(h, RPMTAG_NEVRA);
+	rpmlog(RPMLOG_WARNING, _("RPM v3 packages are deprecated: %s\n"), s);
+	free(s);
+    }
 }
 
 static void loghdrmsg(struct rpmsinfo_s *sinfo, struct pkgdata_s *pkgdata,

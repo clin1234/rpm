@@ -58,6 +58,7 @@ static struct pgpValTbl_s const pgpPubkeyTbl[] = {
     { PGPPUBKEYALGO_ECDSA,	"ECDSA" },
     { PGPPUBKEYALGO_ELGAMAL,	"Elgamal" },
     { PGPPUBKEYALGO_DH,		"Diffie-Hellman (X9.42)" },
+    { PGPPUBKEYALGO_EDDSA,	"EdDSA" },
     { -1,			"Unknown public key algorithm" },
 };
 
@@ -254,8 +255,11 @@ static void pgpPrtTime(const char * pre, const uint8_t *p, size_t plen)
     if (pre && *pre)
 	fprintf(stderr, "%s", pre);
     if (plen == 4) {
+	char buf[1024];
 	time_t t = pgpGrab(p, plen);
-	fprintf(stderr, " %-24.24s(0x%08x)", ctime(&t), (unsigned)t);
+	struct tm _tm, *tms = localtime_r(&t, &_tm);
+	if (strftime(buf, sizeof(buf), "%c", tms) > 0)
+	    fprintf(stderr, " %-24.24s(0x%08x)", buf, (unsigned)t);
     } else {
 	pgpPrtHex("", p+1, plen-1);
     }
@@ -299,7 +303,7 @@ int pgpValTok(pgpValTbl vs, const char * s, const char * se)
  * new format packet headers and V4 signature subpackets.
  * @param s		pointer to length encoding buffer
  * @param slen		buffer size
- * @retval *lenp	decoded length
+ * @param[out] *lenp	decoded length
  * @return		no. of bytes used to encode the length, 0 on error
  */
 static inline
@@ -683,15 +687,42 @@ char * pgpHexStr(const uint8_t *p, size_t plen)
     return str;
 }
 
+static uint8_t curve_oids[] = {
+    PGPCURVE_NIST_P_256,	0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07,
+    PGPCURVE_NIST_P_384,	0x05, 0x2b, 0x81, 0x04, 0x00, 0x22,
+    PGPCURVE_NIST_P_521,	0x05, 0x2b, 0x81, 0x04, 0x00, 0x23,
+    PGPCURVE_BRAINPOOL_P256R1,	0x09, 0x2b, 0x24, 0x03, 0x03, 0x02, 0x08, 0x01, 0x01, 0x07,
+    PGPCURVE_BRAINPOOL_P512R1,	0x09, 0x2b, 0x24, 0x03, 0x03, 0x02, 0x08, 0x01, 0x01, 0x0d,
+    PGPCURVE_ED25519,		0x09, 0x2b, 0x06, 0x01, 0x04, 0x01, 0xda, 0x47, 0x0f, 0x01,
+    PGPCURVE_CURVE25519,	0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x97, 0x55, 0x01, 0x05, 0x01,
+    0,   
+};
+
+static int pgpCurveByOid(const uint8_t *p, int l)
+{
+    uint8_t *curve;
+    for (curve = curve_oids; *curve; curve += 2 + curve[1])
+        if (l == (int)curve[1] && !memcmp(p, curve + 2, l))
+            return (int)curve[0];
+    return 0;
+}
+
 static int pgpPrtPubkeyParams(uint8_t pubkey_algo,
 		const uint8_t *p, const uint8_t *h, size_t hlen,
 		pgpDigParams keyp)
 {
     int rc = 1;
     const uint8_t *pend = h + hlen;
-    int i;
-    pgpDigAlg keyalg = pgpPubkeyNew(pubkey_algo);
-
+    int i, curve = 0;
+    pgpDigAlg keyalg;
+    if (pubkey_algo == PGPPUBKEYALGO_EDDSA) {
+	int len = p + 1 < pend ? p[0] : 0;
+	if (len == 0 || len == 0xff || p + 1 + len > pend)
+	    goto exit;
+	curve = pgpCurveByOid(p + 1, len);
+	p += len + 1;
+    }
+    keyalg = pgpPubkeyNew(pubkey_algo, curve);
     for (i = 0; i < keyalg->mpis && p + 2 <= pend; i++) {
 	int mpil = pgpMpiLen(p);
 	if (p + mpil > pend)
@@ -713,6 +744,7 @@ static int pgpPrtPubkeyParams(uint8_t pubkey_algo,
     else
 	pgpDigAlgFree(keyalg);
 
+exit:
     return rc;
 }
 
@@ -793,10 +825,20 @@ int pgpPubkeyFingerprint(const uint8_t *h, size_t hlen,
 	    case PGPPUBKEYALGO_DSA:
 		mpis = 4;
 		break;
+	    case PGPPUBKEYALGO_EDDSA:
+		mpis = 1;
+		break;
 	    }
 	}
 
 	se = (uint8_t *)(v + 1);
+	/* EdDSA has a curve id before the MPIs */
+	if (v->pubkey_algo == PGPPUBKEYALGO_EDDSA) {
+	    if (se < pend && se[0] != 0x00 && se[0] != 0xff)
+		se += 1 + se[0];
+	    else
+		se = pend;      /* error out when reading the MPI */
+	}
 	while (se < pend && mpis-- > 0)
 	    se += pgpMpiLen(se);
 
@@ -1289,9 +1331,10 @@ static pgpArmor decodePkts(uint8_t *b, uint8_t **pkt, size_t *pktlen)
 		goto exit;
 	    }
 	    t += (sizeof("-----")-1);
-	    if (t >= te) continue;
+	    /* Handle EOF without EOL here, *t == '\0' at EOF */
+	    if (*t && (t >= te)) continue;
 	    /* XXX permitting \r here is not RFC-2440 compliant <shrug> */
-	    if (!(*t == '\n' || *t == '\r')) continue;
+	    if (!(*t == '\n' || *t == '\r' || *t == '\0')) continue;
 
 	    crcdec = NULL;
 	    crclen = 0;

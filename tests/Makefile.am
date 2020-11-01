@@ -18,6 +18,7 @@ TESTSUITE_AT += rpmverify.at
 TESTSUITE_AT += rpmdb.at
 TESTSUITE_AT += rpmbuild.at
 TESTSUITE_AT += rpmbuildid.at
+TESTSUITE_AT += debugedit.at
 TESTSUITE_AT += rpmi.at
 TESTSUITE_AT += rpmvercmp.at
 TESTSUITE_AT += rpmdeps.at
@@ -39,6 +40,8 @@ EXTRA_DIST += $(TESTSUITE_AT)
 
 ## testsuite data
 EXTRA_DIST += data/SPECS/attrtest.spec
+EXTRA_DIST += data/SPECS/buildrequires.spec
+EXTRA_DIST += data/SPECS/docmiss.spec
 EXTRA_DIST += data/SPECS/hello.spec
 EXTRA_DIST += data/SPECS/hello-auto.spec
 EXTRA_DIST += data/SPECS/hello-r2.spec
@@ -47,6 +50,7 @@ EXTRA_DIST += data/SPECS/hello2.spec
 EXTRA_DIST += data/SPECS/hello2cp.spec
 EXTRA_DIST += data/SPECS/hello2ln.spec
 EXTRA_DIST += data/SPECS/hello2-suid.spec
+EXTRA_DIST += data/SPECS/hello-g3.spec
 EXTRA_DIST += data/SPECS/foo.spec
 EXTRA_DIST += data/SPECS/globtest.spec
 EXTRA_DIST += data/SPECS/versiontest.spec
@@ -55,14 +59,21 @@ EXTRA_DIST += data/SPECS/configtest.spec
 EXTRA_DIST += data/SPECS/filedep.spec
 EXTRA_DIST += data/SPECS/flangtest.spec
 EXTRA_DIST += data/SPECS/hlinktest.spec
+EXTRA_DIST += data/SPECS/hlbreak.spec
 EXTRA_DIST += data/SPECS/iftest.spec
+EXTRA_DIST += data/SPECS/ifmultiline.spec
+EXTRA_DIST += data/SPECS/eliftest.spec
 EXTRA_DIST += data/SPECS/symlinktest.spec
 EXTRA_DIST += data/SPECS/deptest.spec
 EXTRA_DIST += data/SPECS/verifyscript.spec
 EXTRA_DIST += data/SPECS/fakeshell.spec
+EXTRA_DIST += data/SPECS/mini.spec
 EXTRA_DIST += data/SPECS/scripts.spec
 EXTRA_DIST += data/SPECS/scriptfail.spec
+EXTRA_DIST += data/SPECS/scriptfile.spec
 EXTRA_DIST += data/SPECS/selfconflict.spec
+EXTRA_DIST += data/SPECS/shebang.spec
+EXTRA_DIST += data/SPECS/suicidal.spec
 EXTRA_DIST += data/SPECS/replacetest.spec
 EXTRA_DIST += data/SPECS/triggers.spec
 EXTRA_DIST += data/SPECS/filetriggers.spec
@@ -75,10 +86,13 @@ EXTRA_DIST += data/SPECS/test-subpackages.spec
 EXTRA_DIST += data/SPECS/test-subpackages-exclude.spec
 EXTRA_DIST += data/SPECS/test-subpackages-pathpostfixes.spec
 EXTRA_DIST += data/SPECS/vattrtest.spec
+EXTRA_DIST += data/SPECS/weirdnames.spec
+EXTRA_DIST += data/SOURCES/buildrequires-1.0.tar.gz
 EXTRA_DIST += data/SOURCES/hello-1.0-modernize.patch
 EXTRA_DIST += data/SOURCES/hello-1.0-install.patch
 EXTRA_DIST += data/SOURCES/hello-1.0.tar.gz
 EXTRA_DIST += data/SOURCES/hello-2.0.tar.gz
+EXTRA_DIST += data/RPMS/capstest-1.0-1.noarch.rpm
 EXTRA_DIST += data/RPMS/foo-1.0-1.noarch.rpm
 EXTRA_DIST += data/RPMS/hello-1.0-1.i386.rpm
 EXTRA_DIST += data/RPMS/hello-1.0-1.ppc64.rpm
@@ -95,6 +109,12 @@ EXTRA_DIST += data/keys/rpm.org-rsa-2048-test.pub
 EXTRA_DIST += data/keys/rpm.org-rsa-2048-test.secret
 EXTRA_DIST += data/macros.testfile
 EXTRA_DIST += data/macros.debug
+EXTRA_DIST += data/SOURCES/foo.c
+EXTRA_DIST += data/SOURCES/bar.c
+EXTRA_DIST += data/SOURCES/baz.c
+EXTRA_DIST += data/SOURCES/foobar.h
+EXTRA_DIST += data/misc/hello.intro
+EXTRA_DIST += data/misc/hello.payload
 
 .PHONY: populate_testing
 
@@ -125,6 +145,7 @@ atlocal:	atlocal.in Makefile
 	  -e "s,[@]usrbindir[@],$(bindir)," \
 	  -e "s,[@]usrlibdir[@],$(libdir)," \
 	  -e "s,[@]execprefix[@],$(exec_prefix)," \
+	  -e "s,[@]usrlibexecdir[@],$(rpmlibexecdir),g" \
 	  -e "s,[@]RPMCONFIGDIR[@],$(rpmconfigdir)," \
 	  -e "s,[@]PYTHON[@],$(PYTHON)," \
 	< $(srcdir)/atlocal.in > atlocal
@@ -133,7 +154,7 @@ EXTRA_DIST += atlocal.in
 
 # The chmod is needed when copying from read-only sources (eg in distcheck)
 populate_testing:
-	HOME=$(abs_builddir)/testing gpg-connect-agent --no-autostart killagent bye ||:
+	if [ -d testing ]; then chmod -R u+w testing/; fi
 	rm -rf testing
 	mkdir -p testing/$(bindir)
 	ln -s ./$(bindir) testing/bin
@@ -142,14 +163,13 @@ populate_testing:
 	(cd ${top_builddir} && \
 	          $(MAKE) DESTDIR=`pwd`/${subdir}/testing install)
 	cp -r ${srcdir}/data/ testing/
-	chmod -R u+w testing/data/
 	for d in dev etc magic tmp var; do if [ ! -d testing/$${d} ]; then mkdir testing/$${d}; fi; done
 	for node in urandom stdin stderr stdout null full; do ln -s /dev/$${node} testing/dev/$${node}; done
 	for cf in hosts resolv.conf passwd shadow group gshadow mtab ; do [ -f /etc/$${cf} ] && ln -s /etc/$${cf} testing/etc/$${cf}; done
 	for prog in gzip cat patch tar sh ln chmod rm mkdir uname grep sed find file ionice mktemp nice cut sort diff touch install wc coreutils xargs; do p=`which $${prog}`; if [ "$${p}" != "" ]; then ln -s $${p} testing/$(bindir)/; fi; done
 	for d in /proc /sys /selinux /etc/selinux; do if [ -d $${d} ]; then ln -s $${d} testing/$${d}; fi; done
 	(cd testing/magic && file -C)
-	HOME=$(abs_builddir)/testing gpg2 --import ${abs_srcdir}/data/keys/*.secret
+	chmod -R u-w testing/
 
 check_DATA = atconfig atlocal $(TESTSUITE)
 
@@ -163,10 +183,10 @@ check-local:
 endif !HAVE_FAKECHROOT
 
 installcheck-local: $(check_DATA) populate_testing
-	$(SHELL) '$(TESTSUITE)' AUTOTEST_PATH='$(bindir)' \
-	$(TESTSUITEFLAGS) ||:
+	$(SHELL) '$(TESTSUITE)' AUTOTEST_PATH='$(bindir):$(rpmlibexecdir)' $(TESTSUITEFLAGS)
 
 clean-local:
 	test ! -f '$(TESTSUITE)' || $(SHELL) '$(TESTSUITE)' --clean
 	rm -f *.tmp
+	if [ -d testing ]; then chmod -R u+w testing/; fi
 	rm -rf testing

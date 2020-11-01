@@ -28,6 +28,7 @@
  */
 struct rpmte_s {
     rpmElementType type;	/*!< Package disposition (installed/removed). */
+    void *userdata;		/*!< Application private user data. */
 
     Header h;			/*!< Package header. */
     char * NEVR;		/*!< Package name-version-release. */
@@ -70,6 +71,7 @@ struct rpmte_s {
     uint8_t *badrelocs;		/*!< (TR_ADDED) Bad relocations (or NULL) */
     FD_t fd;			/*!< (TR_ADDED) Payload file descriptor. */
     int verified;		/*!< (TR_ADDED) Verification status */
+    int addop;			/*!< (TR_ADDED) RPMTE_INSTALL/UPDATE/REINSTALL */
 
 #define RPMTE_HAVE_PRETRANS	(1 << 0)
 #define RPMTE_HAVE_POSTTRANS	(1 << 1)
@@ -246,11 +248,12 @@ rpmte rpmteFree(rpmte te)
 }
 
 rpmte rpmteNew(rpmts ts, Header h, rpmElementType type, fnpyKey key,
-	       rpmRelocation * relocs)
+	       rpmRelocation * relocs, int addop)
 {
     rpmte p = xcalloc(1, sizeof(*p));
     p->ts = ts;
     p->type = type;
+    p->addop = addop;
     p->verified = RPMSIG_UNVERIFIED_TYPE;
 
     if (addTE(p, h, key, relocs)) {
@@ -422,6 +425,17 @@ FD_t rpmteSetFd(rpmte te, FD_t fd)
 fnpyKey rpmteKey(rpmte te)
 {
     return (te != NULL ? te->key : NULL);
+}
+
+void rpmteSetUserdata(rpmte te, void *data)
+{
+    if (te)
+	te->userdata = data;
+}
+
+void *rpmteUserdata(rpmte te)
+{
+    return (te != NULL ? te->userdata : NULL);
 }
 
 rpmds rpmteDS(rpmte te, rpmTagVal tag)
@@ -772,6 +786,11 @@ void rpmteSetVerified(rpmte te, int verified)
 int rpmteVerified(rpmte te)
 {
     return (te != NULL) ? te->verified : 0;
+}
+
+int rpmteAddOp(rpmte te)
+{
+    return te->addop;
 }
 
 int rpmteProcess(rpmte te, pkgGoal goal, int num)

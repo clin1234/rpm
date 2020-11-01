@@ -25,7 +25,7 @@ struct sprintfTag_s {
     rpmTagVal tag;
     int justOne;
     char * format;
-    char * type;
+    const char * type;
 };
 
 typedef enum {
@@ -221,18 +221,18 @@ static char * hsaReserve(headerSprintfArgs hsa, size_t need)
 RPM_GNUC_PRINTF(2, 3)
 static void hsaError(headerSprintfArgs hsa, const char *fmt, ...)
 {
-    /* Use thread local static buffer as headerFormat() errmsg arg is const */
-    static __thread char errbuf[BUFSIZ];
+    /* Use thread local buffer as headerFormat() errmsg arg is const */
+    static __thread char *errbuf = NULL;
 
     if (fmt == NULL) {
 	hsa->errmsg = NULL;
     } else {
 	va_list ap;
 
+	free(errbuf);
 	va_start(ap, fmt);
-	vsnprintf(errbuf, sizeof(errbuf), fmt, ap);
+	rvasprintf(&errbuf, fmt, ap);
 	va_end(ap);
-
 	hsa->errmsg = errbuf;
     }
 }
@@ -287,9 +287,9 @@ static int parseExpression(headerSprintfArgs hsa, sprintfToken token,
  * Parse a headerSprintf term.
  * @param hsa		headerSprintf args
  * @param str
- * @retval *formatPtr
- * @retval *numTokensPtr
- * @retval *endPtr
+ * @param[out] *formatPtr
+ * @param[out] *numTokensPtr
+ * @param[out] *endPtr
  * @param state
  * @return		0 on success
  */
@@ -469,6 +469,10 @@ static int parseFormat(headerSprintfArgs hsa, char * str,
 
 	    if (*start == '\\') {
 		start++;
+		if (*start == '\0') {
+		    hsaError(hsa, _("escaped char expected after \\"));
+		    goto errxit;
+		}
 		*dst++ = escapedChar(*start++);
 	    } else {
 		*dst++ = *start++;
@@ -605,9 +609,9 @@ static rpmtd getCached(tagCache cache, rpmTagVal tag)
  * Do headerGet() just once for given tag, cache results.
  * @param hsa		headerSprintf args
  * @param tag
- * @retval *typeptr
- * @retval *data
- * @retval *countptr
+ * @param[out] *typeptr
+ * @param[out] *data
+ * @param[out] *countptr
  * @return		1 on success, 0 on failure
  */
 static rpmtd getData(headerSprintfArgs hsa, rpmTagVal tag)

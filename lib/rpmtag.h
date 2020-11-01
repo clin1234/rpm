@@ -67,6 +67,8 @@ typedef enum rpmTag_e {
     RPMTAG_SHA256HEADER		= RPMTAG_SIG_BASE+17,	/* s */
     /* RPMTAG_SIG_BASE+18 reserved for RPMSIGTAG_FILESIGNATURES */
     /* RPMTAG_SIG_BASE+19 reserved for RPMSIGTAG_FILESIGNATURELENGTH */
+    RPMTAG_VERITYSIGNATURES	= RPMTAG_SIG_BASE+20,	/* s[] */
+    RPMTAG_VERITYSIGNATUREALGO	= RPMTAG_SIG_BASE+21,	/* i */
 
     RPMTAG_NAME  		= 1000,	/* s */
 #define	RPMTAG_N	RPMTAG_NAME	/* s */
@@ -324,8 +326,8 @@ typedef enum rpmTag_e {
     RPMTAG_RECOMMENDFLAGS	= 5048,	/* i[] */
     RPMTAG_SUGGESTNAME		= 5049,	/* s[] */
 #define	RPMTAG_SUGGESTS RPMTAG_SUGGESTNAME	/* s[] */
-    RPMTAG_SUGGESTVERSION	= 5050,	/* s[] extension */
-    RPMTAG_SUGGESTFLAGS		= 5051,	/* i[] extension */
+    RPMTAG_SUGGESTVERSION	= 5050,	/* s[] */
+    RPMTAG_SUGGESTFLAGS		= 5051,	/* i[] */
     RPMTAG_SUPPLEMENTNAME	= 5052,	/* s[] */
 #define	RPMTAG_SUPPLEMENTS RPMTAG_SUPPLEMENTNAME /* s[] */
     RPMTAG_SUPPLEMENTVERSION	= 5053,	/* s[] */
@@ -373,6 +375,7 @@ typedef enum rpmTag_e {
     RPMTAG_AUTOINSTALLED	= 5094, /* i reservation (unimplemented) */
     RPMTAG_IDENTITY		= 5095, /* s reservation (unimplemented) */
     RPMTAG_MODULARITYLABEL	= 5096, /* s */
+    RPMTAG_PAYLOADDIGESTALT	= 5097, /* s[] */
 
     RPMTAG_FIRSTFREE_TAG	/*!< internal */
 } rpmTag;
@@ -429,6 +432,8 @@ typedef enum rpmSigTag_e {
     RPMSIGTAG_SHA256	= RPMTAG_SHA256HEADER,
     RPMSIGTAG_FILESIGNATURES		= RPMTAG_SIG_BASE + 18,
     RPMSIGTAG_FILESIGNATURELENGTH	= RPMTAG_SIG_BASE + 19,
+    RPMSIGTAG_VERITYSIGNATURES		= RPMTAG_VERITYSIGNATURES,
+    RPMSIGTAG_VERITYSIGNATUREALGO	= RPMTAG_VERITYSIGNATUREALGO,
 } rpmSigTag;
 
 
@@ -526,7 +531,7 @@ rpmTagClass rpmTagTypeGetClass(rpmTagType type);
 
 /** \ingroup rpmtag
  * Return known rpm tag names, sorted by name.
- * @retval tagnames 	tag container of string array type
+ * @param[out] tagnames	tag container of string array type
  * @param fullname	return short or full name
  * @return		number of tag names, 0 on error
  */

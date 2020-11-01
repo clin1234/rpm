@@ -23,6 +23,7 @@
 #include "rpmtd-py.h"
 #include "rpmte-py.h"
 #include "rpmts-py.h"
+#include "rpmver-py.h"
 #include "spec-py.h"
 
 /** \ingroup python
@@ -95,15 +96,6 @@ setVerbosity (PyObject * self, PyObject * arg)
 	return NULL;
 
     rpmSetVerbosity(level);
-
-    Py_RETURN_NONE;
-}
-
-static PyObject *
-setEpochPromote (PyObject * self, PyObject * arg)
-{
-    if (!PyArg_Parse(arg, "i", &_rpmds_nopromote))
-	return NULL;
 
     Py_RETURN_NONE;
 }
@@ -231,8 +223,6 @@ static PyMethodDef rpmModuleMethods[] = {
       "but arguments are tuples of of strings for (epoch, version, release)"},
     { "setVerbosity", (PyCFunction) setVerbosity, METH_O,
       "setVerbosity(level) -- Set log level. See RPMLOG_* constants." },
-    { "setEpochPromote", (PyCFunction) setEpochPromote, METH_O,
-	"setEpochPromote(bool) -- Set if no epoch shall be treated as epoch 0" },
     { "setStats", (PyCFunction) setStats, METH_O,
       "setStats(bool) -- Set if timing stats are printed after a transaction."},
     { "reloadConfig", (PyCFunction) reloadConfig, METH_VARARGS|METH_KEYWORDS,
@@ -272,7 +262,7 @@ static void addRpmTags(PyObject *module)
 	tagval = rpmTagGetValue(shortname);
 
 	PyModule_AddIntConstant(module, tagname, tagval);
-	pyval = PyInt_FromLong(tagval);
+	pyval = PyLong_FromLong(tagval);
 	pyname = utf8FromString(shortname);
 	PyDict_SetItem(dict, pyval, pyname);
 	Py_DECREF(pyval);
@@ -300,11 +290,9 @@ static int prepareInitModule(void)
     if (PyType_Ready(&rpmProblem_Type) < 0) return 0;
     if (PyType_Ready(&rpmPubkey_Type) < 0) return 0;
     if (PyType_Ready(&rpmstrPool_Type) < 0) return 0;
-#if 0
-    if (PyType_Ready(&rpmtd_Type) < 0) return 0;
-#endif
     if (PyType_Ready(&rpmte_Type) < 0) return 0;
     if (PyType_Ready(&rpmts_Type) < 0) return 0;
+    if (PyType_Ready(&rpmver_Type) < 0) return 0;
     if (PyType_Ready(&spec_Type) < 0) return 0;
     if (PyType_Ready(&specPkg_Type) < 0) return 0;
 
@@ -312,7 +300,6 @@ static int prepareInitModule(void)
 }
 static int initModule(PyObject *m);
 
-#if PY_MAJOR_VERSION >= 3
 static int rpmModuleTraverse(PyObject *m, visitproc visit, void *arg) {
     Py_VISIT(pyrpmError);
     return 0;
@@ -347,21 +334,8 @@ PyInit__rpm(void)
     initModule(m);
     return m;
 }
-#else
-void init_rpm(void);	/* XXX eliminate gcc warning */
-void init_rpm(void)
-{
-    PyObject * m;
 
-    if (!prepareInitModule()) return;
-    m = Py_InitModule3("_rpm", rpmModuleMethods, rpm__doc__);
-    if (m == NULL)
-	return;
-    initModule(m);
-}
-#endif
-
-/* Shared python2/3 module initialization: */
+/* Module initialization: */
 static int initModule(PyObject *m)
 {
     PyObject * d;
@@ -415,16 +389,14 @@ static int initModule(PyObject *m)
     Py_INCREF(&rpmstrPool_Type);
     PyModule_AddObject(m, "strpool", (PyObject *) &rpmstrPool_Type);
 
-#if 0
-    Py_INCREF(&rpmtd_Type);
-    PyModule_AddObject(m, "td", (PyObject *) &rpmtd_Type);
-#endif
-
     Py_INCREF(&rpmte_Type);
     PyModule_AddObject(m, "te", (PyObject *) &rpmte_Type);
 
     Py_INCREF(&rpmts_Type);
     PyModule_AddObject(m, "ts", (PyObject *) &rpmts_Type);
+
+    Py_INCREF(&rpmver_Type);
+    PyModule_AddObject(m, "ver", (PyObject *) &rpmver_Type);
 
     Py_INCREF(&spec_Type);
     PyModule_AddObject(m, "spec", (PyObject *) &spec_Type);
@@ -522,6 +494,7 @@ static int initModule(PyObject *m)
     REGISTER_ENUM(RPMTRANS_FLAG_ADDINDEPS);
     REGISTER_ENUM(RPMTRANS_FLAG_NOCONFIGS);
     REGISTER_ENUM(RPMTRANS_FLAG_DEPLOOPS);
+    REGISTER_ENUM(RPMTRANS_FLAG_NOARTIFACTS);
 
     REGISTER_ENUM(RPMPROB_FILTER_IGNOREOS);
     REGISTER_ENUM(RPMPROB_FILTER_IGNOREARCH);

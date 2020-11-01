@@ -8,6 +8,10 @@
  *
  * Text from RFC-2440 in comments is
  *	Copyright (C) The Internet Society (1998).  All Rights Reserved.
+ *
+ * EdDSA algorithm identifier value taken from
+ *      https://datatracker.ietf.org/doc/draft-ietf-openpgp-rfc4880bis/
+ * This value is used in gnupg since version 2.1.0
  */
 
 #include <string.h>
@@ -152,6 +156,7 @@ typedef enum pgpSigType_e {
        20         - Elgamal (Encrypt or Sign)
        21         - Reserved for Diffie-Hellman (X9.42,
                     as defined for IETF-S/MIME)
+       22         - EdDSA
        100 to 110 - Private/Experimental algorithm.
 \endverbatim
  *
@@ -168,7 +173,8 @@ typedef enum pgpPubkeyAlgo_e {
     PGPPUBKEYALGO_EC		= 18,	/*!< Elliptic Curve */
     PGPPUBKEYALGO_ECDSA		= 19,	/*!< ECDSA */
     PGPPUBKEYALGO_ELGAMAL	= 20,	/*!< Elgamal */
-    PGPPUBKEYALGO_DH		= 21	/*!< Diffie-Hellman (X9.42) */
+    PGPPUBKEYALGO_DH		= 21,	/*!< Diffie-Hellman (X9.42) */
+    PGPPUBKEYALGO_EDDSA		= 22	/*!< EdDSA */
 } pgpPubkeyAlgo;
 
 /** \ingroup rpmpgp
@@ -269,6 +275,22 @@ typedef enum pgpHashAlgo_e {
 } pgpHashAlgo;
 
 /** \ingroup rpmpgp
+ * ECC Curves
+ *
+ * The following curve ids are private to rpm. PGP uses
+ * oids to identify a curve.
+ */
+typedef enum pgpCurveId_e {
+    PGPCURVE_NIST_P_256		=  1,	/*!< NIST P-256 */
+    PGPCURVE_NIST_P_384		=  2,	/*!< NIST P-384 */
+    PGPCURVE_NIST_P_521		=  3,	/*!< NIST P-521 */
+    PGPCURVE_BRAINPOOL_P256R1	=  4,	/*!< brainpoolP256r1 */
+    PGPCURVE_BRAINPOOL_P512R1	=  5,	/*!< brainpoolP512r1 */
+    PGPCURVE_ED25519		=  6,	/*!< Ed25519 */
+    PGPCURVE_CURVE25519		=  7,	/*!< Curve25519 */
+} pgpCurveId;
+
+/** \ingroup rpmpgp
  * 5.2.2. Version 3 Signature Packet Format
  * 
  * The body of a version 3 Signature Packet contains:
@@ -285,7 +307,7 @@ typedef enum pgpHashAlgo_e {
  * Algorithm Specific Fields for RSA signatures:
  *   - multiprecision integer (MPI) of RSA signature value m**d.
  *
- * Algorithm Specific Fields for DSA signatures:
+ * Algorithm Specific Fields for DSA and EdDSA signatures:
  *   - MPI of DSA value r.
  *   - MPI of DSA value s.
  */
@@ -642,6 +664,11 @@ typedef struct pgpPktKeyV3_s {
  *       - MPI of Elgamal public key value y (= g**x where x is
  *         secret).
  *
+ *     Algorithm Specific Fields for EdDSA public keys:
+ *       - variable length field containing a curve OID
+ *       - MPI of an EC point representing a public key Q
+ *         (a compressed point prefixed with the octet 0x40)
+ *
  */
 typedef struct pgpPktKeyV4_s {
     uint8_t version;	/*!< version number (4). */
@@ -718,7 +745,7 @@ typedef union pgpPktKey_u {
     struct pgpPktKeyV4_s v4;
 } pgpPktKey;
 
-/* \ingroup rpmpgp
+/** \ingroup rpmpgp
  * 5.6. Compressed Data Packet (Tag 8)
  *
  * The Compressed Data packet contains compressed data. Typically, this
@@ -747,7 +774,7 @@ typedef struct pgpPktCdata_s {
     uint8_t data[1];
 } pgpPktCdata;
 
-/* \ingroup rpmpgp
+/** \ingroup rpmpgp
  * 5.7. Symmetrically Encrypted Data Packet (Tag 9)
  *
  * The Symmetrically Encrypted Data packet contains data encrypted with
@@ -785,7 +812,7 @@ typedef struct pgpPktEdata_s {
     uint8_t data[1];
 } pgpPktEdata;
 
-/* \ingroup rpmpgp
+/** \ingroup rpmpgp
  * 5.8. Marker Packet (Obsolete Literal Packet) (Tag 10)
  *
  * An experimental version of PGP used this packet as the Literal
@@ -801,7 +828,7 @@ typedef struct pgpPktEdata_s {
  * in order to cause that version to report that newer software is
  * necessary to process the message.
  */
-/* \ingroup rpmpgp
+/** \ingroup rpmpgp
  * 5.9. Literal Data Packet (Tag 11)
  *
  * A Literal Data packet contains the body of a message; data that is
@@ -828,7 +855,7 @@ typedef struct pgpPktEdata_s {
  *     indicates the present time.
  *   - The remainder of the packet is literal data.
  *
- * Text data is stored with <CR><LF> text endings (i.e. network-normal
+ * Text data is stored with \<CR\>\<LF\> text endings (i.e. network-normal
  * line endings).  These should be converted to native line endings by
  * the receiving software.
  */
@@ -838,7 +865,7 @@ typedef struct pgpPktLdata_s {
     uint8_t filename[1];
 } pgpPktLdata;
 
-/* \ingroup rpmpgp
+/** \ingroup rpmpgp
  * 5.10. Trust Packet (Tag 12)
  *
  * The Trust packet is used only within keyrings and is not normally
@@ -855,7 +882,7 @@ typedef struct pgpPktTrust_s {
     uint8_t flag;
 } pgpPktTrust;
 
-/* \ingroup rpmpgp
+/** \ingroup rpmpgp
  * 5.11. User ID Packet (Tag 13)
  *
  * A User ID packet consists of data that is intended to represent the
@@ -974,8 +1001,8 @@ char * pgpHexStr(const uint8_t *p, size_t plen);
  * Calculate OpenPGP public key fingerprint.
  * @param pkt		OpenPGP packet (i.e. PGPTAG_PUBLIC_KEY)
  * @param pktlen	OpenPGP packet length (no. of bytes)
- * @retval fp		public key fingerprint
- * @retval fplen	public key fingerprint length
+ * @param[out] fp	public key fingerprint
+ * @param[out] fplen	public key fingerprint length
  * @return		0 on success, else -1
  */
 int pgpPubkeyFingerprint(const uint8_t * pkt, size_t pktlen,
@@ -985,7 +1012,7 @@ int pgpPubkeyFingerprint(const uint8_t * pkt, size_t pktlen,
  * Calculate OpenPGP public key Key ID
  * @param pkt		OpenPGP packet (i.e. PGPTAG_PUBLIC_KEY)
  * @param pktlen	OpenPGP packet length (no. of bytes)
- * @retval keyid	public key Key ID
+ * @param[out] keyid	public key Key ID
  * @return		0 on success, else -1
  */
 int pgpPubkeyKeyID(const uint8_t * pkt, size_t pktlen, pgpKeyID_t keyid);
@@ -995,7 +1022,7 @@ int pgpPubkeyKeyID(const uint8_t * pkt, size_t pktlen, pgpKeyID_t keyid);
  * @param pkts		OpenPGP packet(s)
  * @param pktlen	OpenPGP packet(s) length (no. of bytes)
  * @param pkttype	Expected packet type (signature/key) or 0 for any
- * @retval ret		signature/pubkey packet parameters on success (alloced)
+ * @param[out] ret	signature/pubkey packet parameters on success (alloced)
  * @return		-1 on error, 0 on success
  */
 int pgpPrtParams(const uint8_t *pkts, size_t pktlen, unsigned int pkttype,
@@ -1017,7 +1044,7 @@ int pgpPrtParamsSubkeys(const uint8_t *pkts, size_t pktlen,
  * Print/parse a OpenPGP packet(s).
  * @param pkts		OpenPGP packet(s)
  * @param pktlen	OpenPGP packet(s) length (no. of bytes)
- * @retval dig		parsed output of signature/pubkey packet parameters
+ * @param[out] dig	parsed output of signature/pubkey packet parameters
  * @param printing	should packets be printed?
  * @return		-1 on error, 0 on success
  */
@@ -1026,8 +1053,8 @@ int pgpPrtPkts(const uint8_t *pkts, size_t pktlen, pgpDig dig, int printing);
 /** \ingroup rpmpgp
  * Parse armored OpenPGP packets from a file.
  * @param fn		file name
- * @retval pkt		dearmored OpenPGP packet(s) (malloced)
- * @retval pktlen	dearmored OpenPGP packet(s) length in bytes
+ * @param[out] pkt	dearmored OpenPGP packet(s) (malloced)
+ * @param[out] pktlen	dearmored OpenPGP packet(s) length in bytes
  * @return		type of armor found
  */
 pgpArmor pgpReadPkts(const char * fn, uint8_t ** pkt, size_t * pktlen);
@@ -1035,8 +1062,8 @@ pgpArmor pgpReadPkts(const char * fn, uint8_t ** pkt, size_t * pktlen);
 /** \ingroup rpmpgp
  * Parse armored OpenPGP packets from memory.
  * @param armor		armored OpenPGP packet string
- * @retval pkt		dearmored OpenPGP packet(s) (malloced)
- * @retval pktlen	dearmored OpenPGP packet(s) length in bytes
+ * @param[out] pkt	dearmored OpenPGP packet(s) (malloced)
+ * @param[out] pktlen	dearmored OpenPGP packet(s) length in bytes
  * @return		type of armor found
  */
 pgpArmor pgpParsePkts(const char *armor, uint8_t ** pkt, size_t * pktlen);
@@ -1192,8 +1219,8 @@ int rpmDigestUpdate(DIGEST_CTX ctx, const void * data, size_t len);
  * 1 0* (64-bit count of bits processed, MSB-first)
  *
  * @param ctx		digest context
- * @retval datap	address of returned digest
- * @retval lenp		address of digest length
+ * @param[out] datap	address of returned digest
+ * @param[out] lenp	address of digest length
  * @param asAscii	return digest as ascii string?
  * @return		0 on success
  */
@@ -1250,8 +1277,8 @@ int rpmDigestBundleUpdate(rpmDigestBundle bundle, const void *data, size_t len);
  *
  * @param bundle	digest bundle
  * @param id		id of digest to return
- * @retval datap	address of returned digest
- * @retval lenp		address of digest length
+ * @param[out] datap	address of returned digest
+ * @param[out] lenp	address of digest length
  * @param asAscii	return digest as ascii string?
  * @return		0 on success
  */

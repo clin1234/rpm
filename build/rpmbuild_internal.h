@@ -5,6 +5,7 @@
 #include <rpm/rpmutil.h>
 #include <rpm/rpmstrpool.h>
 #include "build/rpmbuild_misc.h"
+#include "rpmio/rpmlua.h"
 
 #undef HASHTYPE
 #undef HTKEYTYPE
@@ -20,6 +21,7 @@
 #define WHITELIST_NAME ".-_+%{}"
 #define WHITELIST_VERREL "._+%{}~^"
 #define WHITELIST_EVR WHITELIST_VERREL "-:"
+#define LEN_AND_STR(_tag) (sizeof(_tag)-1), (_tag)
 
 struct TriggerFileEntry {
     int index;
@@ -31,9 +33,53 @@ struct TriggerFileEntry {
     uint32_t priority;
 };
 
+typedef enum rpmParseLineType_e {
+    LINE_DEFAULT           = 0,
+    LINE_IF                = (1 << 0),
+    LINE_IFARCH            = (1 << 1),
+    LINE_IFNARCH           = (1 << 2),
+    LINE_IFOS              = (1 << 3),
+    LINE_IFNOS             = (1 << 4),
+    LINE_ELSE              = (1 << 5),
+    LINE_ENDIF             = (1 << 6),
+    LINE_INCLUDE           = (1 << 7),
+    LINE_ELIF              = (1 << 8),
+    LINE_ELIFARCH          = (1 << 9),
+    LINE_ELIFOS            = (1 << 10),
+} rpmParseLineType;
+
+typedef const struct parsedSpecLine_s {
+    int id;
+    size_t textLen;
+    const char *text;
+    int withArgs;
+    int isConditional;
+    int wrongPrecursors;
+} * parsedSpecLine;
+
+static struct parsedSpecLine_s const lineTypes[] = {
+    { LINE_ENDIF,      LEN_AND_STR("%endif")  , 0, 1, LINE_ENDIF},
+    { LINE_ELSE,       LEN_AND_STR("%else")   , 0, 1, LINE_ENDIF | LINE_ELSE },
+    { LINE_IF,         LEN_AND_STR("%if")     , 1, 1, 0},
+    { LINE_IFARCH,     LEN_AND_STR("%ifarch") , 1, 1, 0},
+    { LINE_IFNARCH,    LEN_AND_STR("%ifnarch"), 1, 1, 0},
+    { LINE_IFOS,       LEN_AND_STR("%ifos")   , 1, 1, 0},
+    { LINE_IFNOS,      LEN_AND_STR("%ifnos")  , 1, 1, 0},
+    { LINE_INCLUDE,    LEN_AND_STR("%include"), 1, 0, 0},
+    { LINE_ELIFARCH,   LEN_AND_STR("%elifarch"), 1, 1, LINE_ENDIF | LINE_ELSE},
+    { LINE_ELIFOS,     LEN_AND_STR("%elifos"),  1, 1, LINE_ENDIF | LINE_ELSE},
+    { LINE_ELIF,       LEN_AND_STR("%elif")    ,1, 1, LINE_ENDIF | LINE_ELSE},
+    { 0, 0, 0, 0, 0, 0 }
+ };
+
+#define LINE_IFANY (LINE_IF | LINE_IFARCH | LINE_IFNARCH | LINE_IFOS | LINE_IFNOS)
+#define LINE_ELIFANY (LINE_ELIF | LINE_ELIFOS | LINE_ELIFARCH)
+
 typedef struct ReadLevelEntry {
     int reading;
     int lineNum;
+    int readable;
+    parsedSpecLine lastConditional;
     struct ReadLevelEntry * next;
 } RLE_t;
 
@@ -92,9 +138,11 @@ struct rpmSpec_s {
     Package sourcePackage;
 
     rpmMacroContext macros;
+    rpmlua lua;
     rpmstrPool pool;
 
     StringBuf prep;		/*!< %prep scriptlet. */
+    StringBuf buildrequires;	/*!< %buildrequires scriptlet. */
     StringBuf build;		/*!< %build scriptlet. */
     StringBuf install;		/*!< %install scriptlet. */
     StringBuf check;		/*!< %check scriptlet. */
@@ -143,6 +191,9 @@ struct Package_s {
     fileRenameHash fileRenameMap;
     ARGV_t policyList;
 
+    char *filename;
+    rpmRC rc;
+
     Package next;
 };
 
@@ -189,13 +240,16 @@ typedef enum rpmParseState_e {
     PART_EMPTY			= 39+PART_BASE, /*!< */
     PART_PATCHLIST		= 40+PART_BASE, /*!< */
     PART_SOURCELIST		= 41+PART_BASE, /*!< */
-    PART_LAST			= 42+PART_BASE  /*!< */
+    PART_BUILDREQUIRES		= 42+PART_BASE, /*!< */
+    PART_LAST			= 43+PART_BASE  /*!< */
 } rpmParseState; 
 
 
 #define STRIP_NOTHING             0
 #define STRIP_TRAILINGSPACE (1 << 0)
 #define STRIP_COMMENTS      (1 << 1)
+
+#define ALLOW_EMPTY         (1 << 16)
 
 #ifdef __cplusplus
 extern "C" {
@@ -228,12 +282,20 @@ int readLine(rpmSpec spec, int strip);
  * Read next line from spec file.
  * @param spec		spec file control structure
  * @param strip		truncate comments?
- * @retval avp		pointer to argv (optional, alloced)
- * @retval sbp		pointer to string buf (optional, alloced)
+ * @param[out] avp		pointer to argv (optional, alloced)
+ * @param[out] sbp		pointer to string buf (optional, alloced)
  * @return		next spec part or PART_ERROR on error
  */
 RPM_GNUC_INTERNAL
 int parseLines(rpmSpec spec, int strip, ARGV_t *avp, StringBuf *sbp);
+
+/** \ingroup rpmbuild
+ * Destroy source component chain.
+ * @param s		source component chain
+ * @return		NULL always
+ */
+RPM_GNUC_INTERNAL
+struct Source * freeSources(struct Source * s);
 
 /** \ingroup rpmbuild
  * Check line for section separator, return next parser state.
@@ -344,14 +406,6 @@ rpmRC parseRCPOT(rpmSpec spec, Package pkg, const char * field, rpmTagVal tagN,
 		int index, rpmsenseFlags tagflags, addReqProvFunction cb, void *cbdata);
 
 /** \ingroup rpmbuild
- * Evaluate boolean expression.
- * @param expr		expression to parse
- * @return
- */
-RPM_GNUC_INTERNAL
-int parseExpressionBoolean(const char * expr);
-
-/** \ingroup rpmbuild
  * Run a build script, assembled from spec file scriptlet section.
  *
  * @param spec		spec file control structure
@@ -359,18 +413,19 @@ int parseExpressionBoolean(const char * expr);
  * @param name		name of scriptlet section
  * @param sb		lines that compose script body
  * @param test		don't execute scripts or package if testing
+ * @param sb_stdoutp	StringBuf to catupre the stdout of the script or NULL
  * @return		RPMRC_OK on success
  */
 RPM_GNUC_INTERNAL
 rpmRC doScript(rpmSpec spec, rpmBuildFlags what, const char * name,
-		const char * sb, int test);
+	       const char * sb, int test, StringBuf * sb_stdoutp);
 
 /** \ingroup rpmbuild
  * Find sub-package control structure by name.
  * @param spec		spec file control structure
  * @param name		(sub-)package name
  * @param flag		if PART_SUBNAME, then 1st package name is prepended
- * @retval pkg		package control structure
+ * @param[out] pkg		package control structure
  * @return		0 on success, 1 on failure
  */
 RPM_GNUC_INTERNAL
@@ -428,14 +483,13 @@ rpmRC rpmfcGenerateDepends(const rpmSpec spec, Package pkg);
  * Return helper output.
  * @param av		helper argv (with possible macros)
  * @param sb_stdin	helper input
- * @retval *sb_stdoutp	helper output
+ * @param[out] *sb_stdoutp	helper output
  * @param failnonzero	IS non-zero helper exit status a failure?
  * @param buildRoot	buildRoot directory (or NULL)
- * @param dup		duplicate output (or NULL)
  */
 RPM_GNUC_INTERNAL
 int rpmfcExec(ARGV_const_t av, StringBuf sb_stdin, StringBuf * sb_stdoutp,
-		int failnonzero, const char *buildRoot, FILE *dup);
+		int failnonzero, const char *buildRoot);
 
 /** \ingroup rpmbuild
  * Post-build processing for policies in binary package(s).
@@ -468,7 +522,7 @@ rpmRC packageBinaries(rpmSpec spec, const char *cookie, int cheating);
 /** \ingroup rpmbuild
  * Generate source package.
  * @param spec		spec file control structure
- * @retval cookie	build identifier "cookie" or NULL
+ * @param[out] cookie	build identifier "cookie" or NULL
  * @return		RPMRC_OK on success
  */
 RPM_GNUC_INTERNAL
@@ -530,6 +584,27 @@ rpmRC checkForEncoding(Header h, int addtag);
 RPM_GNUC_INTERNAL
 void copyInheritedTags(Header h, Header fromh);
 
+RPM_GNUC_INTERNAL
+int specExpand(rpmSpec spec, int lineno, const char *sbuf,
+		char **obuf);
+
+/*
+ * Read expanded lines from a file into avp and/or sbp, controlled by
+ * flags (STRIP_*, ALLOW_EMPTY)
+ * Returns number or read lines, or -1 on error.
+ */
+RPM_GNUC_INTERNAL
+int readManifest(rpmSpec spec, const char *path, const char *descr, int flags,
+		ARGV_t *avp, StringBuf *sbp);
+
+RPM_GNUC_INTERNAL
+void * specLuaInit(rpmSpec spec);
+
+RPM_GNUC_INTERNAL
+void * specLuaFini(rpmSpec spec);
+
+RPM_GNUC_INTERNAL
+void addLuaSource(rpmlua lua, const struct Source *p);
 #ifdef __cplusplus
 }
 #endif

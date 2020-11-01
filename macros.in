@@ -26,11 +26,9 @@
 %__awk			@AWK@
 %__bzip2		@__BZIP2@
 %__cat			@__CAT@
-%__chgrp		@__CHGRP@
 %__chmod		@__CHMOD@
 %__chown		@__CHOWN@
 %__cp			@__CP@
-%__cpio			@__CPIO@
 %__file			@__FILE@
 %__gpg			@__GPG@
 %__grep			@__GREP@
@@ -41,20 +39,14 @@
 %__ln_s			@LN_S@
 %__lrzip		@__LRZIP@
 %__lzip			@__LZIP@
-# Deprecated, use %__xz instead.
-%__lzma			%__xz --format=lzma
 %__xz			@__XZ@
 %__make			@__MAKE@
 %__mkdir		@__MKDIR@
 %__mkdir_p		@__MKDIR_P@
 %__mv			@__MV@
 %__patch		@__PATCH@
-%__restorecon		@__RESTORECON@
 %__rm			@__RM@
-%__rsh			@__RSH@
 %__sed			@__SED@
-%__semodule		@__SEMODULE@
-%__ssh			@__SSH@
 %__tar			@__TAR@
 %__unzip		@__UNZIP@
 %__zstd			@__ZSTD@
@@ -73,11 +65,7 @@
 %__cpp			@CPP@
 %__cxx			@CXX@
 %__ld			@__LD@
-%__nm			@__NM@
-%__objcopy		@__OBJCOPY@
 %__objdump		@__OBJDUMP@
-%__ranlib		@RANLIB@
-%__remsh		%{__rsh}
 %__strip		@__STRIP@
 
 #==============================================================================
@@ -148,9 +136,6 @@
 
 #	The interpreter used for build scriptlets.
 %_buildshell		/bin/sh
-
-#	The path to the bzip2 executable (legacy, use %{__bzip2} instead).
-%_bzip2bin		%{__bzip2}
 
 #	The location of the rpm database file(s).
 %_dbpath		%{_var}/lib/rpm
@@ -227,16 +212,22 @@ package or when debugging this package.\
 %__global_requires_exclude_from		%{?_docdir:%{_docdir}}
 %__global_provides_exclude_from		%{?_docdir:%{_docdir}}
 
-#	The path to the gzip executable (legacy, use %{__gzip} instead).
-%_gzipbin		%{__gzip}
+#	Maximum age of preserved changelog entries in binary packages,
+#	relative to newest existing entry. Unix timestamp format.
+%_changelog_trimage	0
 
 #	The Unix time of the latest kept changelog entry in binary packages.
-#	Any older entry is not packaged in binary packages.
+#	DEPRACATED, use %_changelog_trimage instead.
 %_changelog_trimtime	0
 
 #	If true, set the SOURCE_DATE_EPOCH environment variable
 #	to the timestamp of the topmost changelog entry
 %source_date_epoch_from_changelog 0
+
+#	If true, make sure that buildtime in built rpms
+#	is set to the value of SOURCE_DATE_EPOCH.
+#	Is ignored when SOURCE_DATE_EPOCH is not set.
+%use_source_date_epoch_as_buildtime 0
 
 #	If true, make sure that timestamps in built rpms
 #	are not later than the value of SOURCE_DATE_EPOCH.
@@ -272,9 +263,6 @@ package or when debugging this package.\
 
 #	Path to top of build area.
 %_topdir		%{getenv:HOME}/rpmbuild
-
-#	The path to the unzip executable (legacy, use %{__unzip} instead).
-%_unzipbin		%{__unzip}
 
 #==============================================================================
 # ---- Optional rpmrc macros.
@@ -338,17 +326,6 @@ package or when debugging this package.\
 #	
 %_install_langs	all
 
-#	The value of CLASSPATH in build scriptlets (iff configured).
-#	
-#%_javaclasspath	all
-
-#	Import packaging conventions from jpackage.org (prefixed with _
-#	to avoid name collisions).
-#	
-%_javadir      %{_datadir}/java
-%_javadocdir   %{_datadir}/javadoc
-
-
 #	Set ModularityLabel: for packages being build
 #
 #%modularitylabel
@@ -377,8 +354,13 @@ package or when debugging this package.\
 #		"w9.gzdio"	gzip level 9 (default).
 #		"w9.bzdio"	bzip2 level 9.
 #		"w6.xzdio"	xz level 6, xz's default.
-#		"w7T16.xzdio"	xz level 7 using 16 thread (xz only)
+#		"w7T16.xzdio"	xz level 7 using 16 threads
+#		"w7T0.xzdio"	xz level 7 using %{getncpus} threads
+#		"w7T.xzdio"	xz level 7 using %{getncpus} threads
 #		"w6.lzdio"	lzma-alone level 6, lzma's default
+#		"w3.zstdio"	zstd level 3, zstd's default
+#		"w19T8.zstdio"	zstd level 19 using 8 threads
+#		"w7T0.zstdio"	zstd level 7 using %{getncpus} threads
 #		"w.ufdio"	uncompressed
 #
 #%_source_payload	w9.gzdio
@@ -441,7 +423,7 @@ package or when debugging this package.\
 %_binaries_in_noarch_packages_terminate_build	1
 
 # Should invalid utf8 encoding in package metadata terminate a build?
-%_invalid_encoding_terminates_build 0
+%_invalid_encoding_terminates_build 1
 
 # Should invalid version format in requires, provides, ... terminate a build?
 %_wrong_version_format_terminate_build 1
@@ -559,12 +541,8 @@ package or when debugging this package.\
 # Use internal dependency generator rather than external helpers?
 %_use_internal_dependency_generator	1
 
-#
-# Filter GLIBC_PRIVATE Provides: and Requires:
-%_filter_GLIBC_PRIVATE			0
-
 # Directories whose contents should be considered as documentation.
-%__docdir_path %{_datadir}/doc:%{_datadir}/man:%{_datadir}/info:%{_datadir}/gtk-doc/html:%{?_docdir}:%{?_mandir}:%{?_infodir}:%{?_javadocdir}:/usr/doc:/usr/man:/usr/info:/usr/X11R6/man
+%__docdir_path %{_datadir}/doc:%{_datadir}/man:%{_datadir}/info:%{_datadir}/gtk-doc/html:%{_datadir}/gnome/help:%{?_docdir}:%{?_mandir}:%{?_infodir}:%{?_javadocdir}:/usr/doc:/usr/man:/usr/info:/usr/X11R6/man
 
 #
 # Path to scripts to autogenerate package dependencies,
@@ -610,8 +588,9 @@ package or when debugging this package.\
 #
 # Select backend database. The following values are supported:
 # bdb Berkeley DB
-# lmdb Lightning Memory-mapped Database
 # ndb new data base format
+# sqlite Sqlite database
+# dummy dummy backend (no actual functionality)
 #
 %_db_backend	      bdb
 
@@ -736,18 +715,27 @@ package or when debugging this package.\
 # Disabler flags for package verification (similar to vsflags)
 %_pkgverify_flags 0x0
 
-# Set to 1 to minimize writing (at the cost of more reads) to
-# conserve eg SSD disks.
-%_minimize_writes      0
+# Minimize writes during transactions (at the cost of more reads) to
+# conserve eg SSD disks (EXPERIMENTAL).
+# 1			enable
+# 0 			disable
+# -1 (or undefined)	autodetect on platforms where supported, otherwise
+# 			default to disabled
+#%_minimize_writes      -1
 
-# Set to 1 to flush file IO during transactions (at a severe cost in
-# performance for rotational disks)
-#%_flush_io	0
+# Flush file IO during transactions (at a severe cost in performance
+# for rotational disks).
+# 1			enable
+# <= 0 (or undefined)	disable
+#%_flush_io		0
 
 # Set to 1 to have IMA signatures written also on %config files.
 # Note that %config files may be changed and therefore end up with
 # a wrong or missing signature.
 #%_ima_sign_config_files	0
+
+# Set to 1 to have fsverity signatures written for %config files.
+#%_fsverity_sign_config_files	0
 
 #
 # Default output format string for rpm -qa
@@ -774,7 +762,7 @@ package or when debugging this package.\
 %__os_install_post	%{___build_post}
 
 # Macro to fix broken permissions in sources
-%_fixperms      %{__chmod} -Rf @FIXPERMS@
+%_fixperms      %{__chmod} -Rf a+rX,u+w,g-w,o-w
 
 #==============================================================================
 # ---- Scriptlet template templates.
@@ -808,7 +796,7 @@ package or when debugging this package.\
   PKG_CONFIG_PATH=\"${PKG_CONFIG_PATH}:%{_libdir}/pkgconfig:%{_datadir}/pkgconfig\"\
   export PKG_CONFIG_PATH\
   \
-  %{verbose:set -x}%{!verbose:exec > /dev/null}\
+  %{verbose:set -x}\
   umask 022\
   cd \"%{u2p:%{_builddir}}\"\
 
@@ -816,7 +804,7 @@ package or when debugging this package.\
 #%___build_body		%{nil}
 %___build_post	\
   RPM_EC=$?\
-  for pid in $(jobs -p); do kill -9 ${pid}; done\
+  for pid in $(jobs -p); do kill -9 ${pid} || continue; done\
   exit ${RPM_EC}\
 %{nil}
 
@@ -845,6 +833,21 @@ package or when debugging this package.\
 #%{__spec_prep_body}\
 #%{__spec_prep_post}\
 #%{nil}
+
+%__spec_buildrequires_shell	%{___build_shell}
+%__spec_buildrequires_args	%{___build_args}
+%__spec_buildrequires_cmd	%{___build_cmd}
+%__spec_buildrequires_pre	%{___build_pre}
+%__spec_buildrequires_body	%{___build_body}
+%__spec_buildrequires_post	%{___build_post}
+%__spec_buildrequires_template	#!%{__spec_buildrequires_shell}\
+%{__spec_buildrequires_pre}\
+%{nil}
+
+#%{__spec_buildrequires_body}\
+#%{__spec_buildrequires_post}\
+#%{nil}
+
 
 %__spec_build_shell	%{___build_shell}
 %__spec_build_args	%{___build_args}
@@ -1005,17 +1008,17 @@ package or when debugging this package.\
 %build_fflags %{optflags} %{?_fmoddir:-I%{_fmoddir}}
 
 # Link editor flags.  This is usually called LDFLAGS in makefiles.
-#%build_ldflags -Wl,-z,relro %{?_lto_cflags}
+#%build_ldflags -Wl,-z,relro
 
 # Expands to shell code to seot the compiler/linker environment
 # variables CFLAGS, CXXFLAGS, FFLAGS, FCFLAGS, LDFLAGS if they have
 # not been set already.
 %set_build_flags \
-  CFLAGS="${CFLAGS:-%{build_cflags}}" ; export CFLAGS ; \
-  CXXFLAGS="${CXXFLAGS:-%{build_cxxflags}}" ; export CXXFLAGS ; \
-  FFLAGS="${FFLAGS:-%{build_fflags}}" ; export FFLAGS ; \
-  FCFLAGS="${FCFLAGS:-%{build_fflags}}" ; export FCFLAGS ; \
-  LDFLAGS="${LDFLAGS:-%{build_ldflags}}" ; export LDFLAGS
+  CFLAGS="${CFLAGS:-%{?build_cflags}}" ; export CFLAGS ; \
+  CXXFLAGS="${CXXFLAGS:-%{?build_cxxflags}}" ; export CXXFLAGS ; \
+  FFLAGS="${FFLAGS:-%{?build_fflags}}" ; export FFLAGS ; \
+  FCFLAGS="${FCFLAGS:-%{?build_fflags}}" ; export FCFLAGS ; \
+  LDFLAGS="${LDFLAGS:-%{?build_ldflags}}" ; export LDFLAGS
 
 #==============================================================================
 # ---- specfile macros.
@@ -1052,8 +1055,12 @@ package or when debugging this package.\
 %_make_output_sync %(! %{__make} --version -O >/dev/null 2>&1 || echo -O)
 
 #------------------------------------------------------------------------------
+# Verbosity options passed to make
+%_make_verbose V=1 VERBOSE=1
+
+#------------------------------------------------------------------------------
 # The "make" analogue, hiding the _smp_mflags magic from specs
-%make_build %{__make} %{_make_output_sync} %{?_smp_mflags} V=1 VERBOSE=1
+%make_build %{__make} %{_make_output_sync} %{?_smp_mflags} %{_make_verbose}
 
 #------------------------------------------------------------------------------
 # The make install analogue of %configure for modern autotools:
@@ -1093,8 +1100,16 @@ package or when debugging this package.\
 %ix86   i386 i486 i586 i686 pentium3 pentium4 athlon geode
 
 #------------------------------------------------------------------------------
-# arch macro for all supported ARM processors
-%arm	armv3l armv4b armv4l armv4tl armv5tl armv5tel armv5tejl armv6l armv6hl armv7l armv7hl armv7hnl armv8l armv8hl armv8hnl armv8hcnl
+# arch macro for all supported 32-bit ARM processors
+%arm32	armv3l armv4b armv4l armv4tl armv5tl armv5tel armv5tejl armv6l armv6hl armv7l armv7hl armv7hnl armv8l armv8hl armv8hnl armv8hcnl
+
+#------------------------------------------------------------------------------
+# arch macro for all supported 32-bit ARM processors (legacy, use %%arm32 instead)
+%arm	%{arm32}
+
+#------------------------------------------------------------------------------
+# arch macro for all supported 64-bit ARM processors
+%arm64	aarch64
 
 #------------------------------------------------------------------------------
 # arch macro for 32-bit MIPS processors
@@ -1128,6 +1143,13 @@ package or when debugging this package.\
 # arch macro for all supported PowerPC 64 processors
 %power64	ppc64 ppc64p7 ppc64le
 
+#------------------------------------------------------------------------------
+# arch macro for all supported RISC-V processors
+%riscv32	riscv32
+%riscv64	riscv64
+%riscv128	riscv128
+%riscv		%{riscv32} %{riscv64} %{riscv128}
+
 #------------------------------------------------------------------------
 # Use in %install to generate locale specific file lists. For example,
 #
@@ -1154,6 +1176,7 @@ package or when debugging this package.\
 %__transaction_selinux		%{__plugindir}/selinux.so
 %__transaction_syslog		%{__plugindir}/syslog.so
 %__transaction_ima		%{__plugindir}/ima.so
+%__transaction_fsverity		%{__plugindir}/fsverity.so
 %__transaction_prioreset	%{__plugindir}/prioreset.so
 %__transaction_audit		%{__plugindir}/audit.so
 
@@ -1191,12 +1214,13 @@ package or when debugging this package.\
 %{__git} init %{-q}\
 %{__git} config user.name "%{__scm_username}"\
 %{__git} config user.email "%{__scm_usermail}"\
-%{__git} add .\
+%{__git} config gc.auto 0\
+%{__git} add --force .\
 %{__git} commit %{-q} --allow-empty -a\\\
 	--author "%{__scm_author}" -m "%{NAME}-%{VERSION} base"
 
 %__scm_apply_git(qp:m:)\
-%{__git} apply --index %{-p:-p%{-p*}} -\
+%{__git} apply --index --reject %{-p:-p%{-p*}} -\
 %{__git} commit %{-q} -m %{-m*} --author "%{__scm_author}"
 
 # Git, using "git am" (-m is unused)
@@ -1204,7 +1228,7 @@ package or when debugging this package.\
 %{expand:%__scm_setup_git %{-q}}
 
 %__scm_apply_git_am(qp:m:)\
-%{__git} am %{-q} %{-p:-p%{-p*}}
+%{__git} am --reject %{-q} %{-p:-p%{-p*}}
 
 # Quilt
 %__scm_setup_quilt(q) %{nil}

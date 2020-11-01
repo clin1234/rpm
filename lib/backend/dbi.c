@@ -12,6 +12,22 @@
 #include "lib/rpmdb_internal.h"
 #include "debug.h"
 
+const struct rpmdbOps_s *backends[] = {
+#if defined(WITH_SQLITE)
+    &sqlite_dbops,
+#endif
+#ifdef ENABLE_NDB
+    &ndb_dbops,
+#endif
+#if defined(WITH_BDB)
+    &db3_dbops,
+#endif
+#if defined(WITH_BDB_RO)
+    &bdbro_dbops,
+#endif
+    &dummydb_dbops,
+    NULL
+};
 
 dbiIndex dbiFree(dbiIndex dbi)
 {
@@ -32,64 +48,77 @@ dbiIndex dbiNew(rpmdb rdb, rpmDbiTagVal rpmtag)
     return dbi;
 }
 
+/* Test whether there's a database for this backend, return true/false */
+static int tryBackend(const char *dbhome, const struct rpmdbOps_s *be)
+{
+    int rc = 0;
+    if (be && be->path) {
+	char *path = rstrscat(NULL, dbhome, "/", be->path, NULL);
+	rc = (access(path, F_OK) == 0);
+	free(path);
+    }
+    return rc;
+}
+
 static void
 dbDetectBackend(rpmdb rdb)
 {
     const char *dbhome = rpmdbHome(rdb);
     char *db_backend = rpmExpand("%{?_db_backend}", NULL);
-    char *path = NULL;
+    const struct rpmdbOps_s **ops;
+    const struct rpmdbOps_s *cfg = NULL;
+    const struct rpmdbOps_s *ondisk = NULL;
 
-#if defined(WITH_LMDB)
-    if (!strcmp(db_backend, "lmdb")) {
-	rdb->db_ops = &lmdb_dbops;
-    } else
-#endif
-#ifdef ENABLE_NDB
-    if (!strcmp(db_backend, "ndb")) {
-	rdb->db_ops = &ndb_dbops;
-    } else
-#endif
-#if defined(WITH_BDB)
-    {
-	rdb->db_ops = &db3_dbops;
-	if (*db_backend == '\0') {
-	    free(db_backend);
-	    db_backend = xstrdup("bdb");
+    /* Find configured backend */
+    for (ops = backends; ops && *ops; ops++) {
+	if (rstreq(db_backend, (*ops)->name)) {
+	    cfg = *ops;
+	    break;
 	}
     }
-#endif
 
-#if defined(WITH_LMDB)
-    path = rstrscat(NULL, dbhome, "/data.mdb", NULL);
-    if (access(path, F_OK) == 0 && rdb->db_ops != &lmdb_dbops) {
-	rdb->db_ops = &lmdb_dbops;
-	rpmlog(RPMLOG_WARNING, _("Found LMDB data.mdb database while attempting %s backend: using lmdb backend.\n"), db_backend);
+    if (!cfg) {
+	rpmlog(RPMLOG_WARNING, _("invalid %%_db_backend: %s\n"), db_backend);
+	goto exit;
     }
-    free(path);
-#endif
 
-#ifdef ENABLE_NDB
-    path = rstrscat(NULL, dbhome, "/Packages.db", NULL);
-    if (access(path, F_OK) == 0 && rdb->db_ops != &ndb_dbops) {
-	rdb->db_ops = &ndb_dbops;
-	rpmlog(RPMLOG_WARNING, _("Found NDB Packages.db database while attempting %s backend: using ndb backend.\n"), db_backend);
+    /* If configured database doesn't exist, try autodetection */
+    if (!tryBackend(dbhome, cfg)) {
+	for (ops = backends; ops && *ops; ops++) {
+	    if (tryBackend(dbhome, *ops)) {
+		ondisk = *ops;
+		break;
+	    }
+	}
+
+	/* On-disk database differs from configuration */
+	if (ondisk && ondisk != cfg) {
+	    if (rdb->db_flags & RPMDB_FLAG_REBUILD) {
+		rpmlog(RPMLOG_WARNING,
+			_("Converting database from %s to %s backend\n"),
+			ondisk->name, cfg->name);
+	    } else {
+		rpmlog(RPMLOG_WARNING,
+		    _("Found %s %s database while attempting %s backend: "
+		    "using %s backend.\n"),
+		    ondisk->name, ondisk->path, db_backend, ondisk->name);
+	    }
+	    rdb->db_ops = ondisk;
+	}
     }
-    free(path);
-#endif
 
-#if defined(WITH_BDB)
-    path = rstrscat(NULL, dbhome, "/Packages", NULL);
-    if (access(path, F_OK) == 0 && rdb->db_ops != &db3_dbops) {
-	rdb->db_ops = &db3_dbops;
-	rpmlog(RPMLOG_WARNING, _("Found BDB Packages database while attempting %s backend: using bdb backend.\n"), db_backend);
-    }
-    free(path);
-#endif
+    /* Newly created database, use configured backend */
+    if (rdb->db_ops == NULL && cfg)
+	rdb->db_ops = cfg;
 
+exit:
+    /* If all else fails... */
     if (rdb->db_ops == NULL) {
 	rdb->db_ops = &dummydb_dbops;
-	rpmlog(RPMLOG_DEBUG, "using dummy database, installs not possible\n");
+	rpmlog(RPMLOG_WARNING, "using dummy database, installs not possible\n");
     }
+
+    rdb->db_descr = rdb->db_ops->name;
 
     if (db_backend)
 	free(db_backend);
@@ -146,7 +175,7 @@ dbiCursor dbiCursorFree(dbiIndex dbi, dbiCursor dbc)
     return dbi->dbi_rpmdb->db_ops->cursorFree(dbi, dbc);
 }
 
-rpmRC pkgdbPut(dbiIndex dbi, dbiCursor dbc, unsigned int hdrNum, unsigned char *hdrBlob, unsigned int hdrLen)
+rpmRC pkgdbPut(dbiIndex dbi, dbiCursor dbc, unsigned int *hdrNum, unsigned char *hdrBlob, unsigned int hdrLen)
 {
     return dbi->dbi_rpmdb->db_ops->pkgdbPut(dbi, dbc, hdrNum, hdrBlob, hdrLen);
 }
@@ -161,11 +190,6 @@ rpmRC pkgdbGet(dbiIndex dbi, dbiCursor dbc, unsigned int hdrNum, unsigned char *
     return dbi->dbi_rpmdb->db_ops->pkgdbGet(dbi, dbc, hdrNum, hdrBlob, hdrLen);
 }
 
-rpmRC pkgdbNew(dbiIndex dbi, dbiCursor dbc,  unsigned int *hdrNum)
-{
-    return dbi->dbi_rpmdb->db_ops->pkgdbNew(dbi, dbc, hdrNum);
-}
-
 unsigned int pkgdbKey(dbiIndex dbi, dbiCursor dbc)
 {
     return dbi->dbi_rpmdb->db_ops->pkgdbKey(dbi, dbc);
@@ -176,14 +200,14 @@ rpmRC idxdbGet(dbiIndex dbi, dbiCursor dbc, const char *keyp, size_t keylen, dbi
     return dbi->dbi_rpmdb->db_ops->idxdbGet(dbi, dbc, keyp, keylen, set, curFlags);
 }
 
-rpmRC idxdbPut(dbiIndex dbi, dbiCursor dbc, const char *keyp, size_t keylen, dbiIndexItem rec)
+rpmRC idxdbPut(dbiIndex dbi, rpmTagVal rpmtag, unsigned int hdrNum, Header h)
 {
-    return dbi->dbi_rpmdb->db_ops->idxdbPut(dbi, dbc, keyp, keylen, rec);
+    return dbi->dbi_rpmdb->db_ops->idxdbPut(dbi, rpmtag, hdrNum, h);
 }
 
-rpmRC idxdbDel(dbiIndex dbi, dbiCursor dbc, const char *keyp, size_t keylen, dbiIndexItem rec)
+rpmRC idxdbDel(dbiIndex dbi, rpmTagVal rpmtag, unsigned int hdrNum, Header h)
 {
-    return dbi->dbi_rpmdb->db_ops->idxdbDel(dbi, dbc, keyp, keylen, rec);
+    return dbi->dbi_rpmdb->db_ops->idxdbDel(dbi, rpmtag, hdrNum, h);
 }
 
 const void * idxdbKey(dbiIndex dbi, dbiCursor dbc, unsigned int *keylen)

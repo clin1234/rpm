@@ -26,7 +26,7 @@ struct rpmInstallArguments_s rpmIArgs = {
 RPM_GNUC_NORETURN
 static void argerror(const char * desc)
 {
-    fprintf(stderr, _("%s: %s\n"), xgetprogname(), desc);
+    fprintf(stderr, "%s: %s\n", xgetprogname(), desc);
     exit(EXIT_FAILURE);
 }
 
@@ -133,6 +133,9 @@ struct poptOption rpmInstallPoptTable[] = {
  { "erase", 'e', POPT_BIT_SET,
 	&rpmIArgs.installInterfaceFlags, INSTALL_ERASE,
 	N_("erase (uninstall) package"), N_("<package>+") },
+ { "excludeartifacts", '\0', POPT_BIT_SET|POPT_ARGFLAG_DOC_HIDDEN,
+	&rpmIArgs.transFlags, RPMTRANS_FLAG_NOARTIFACTS,
+	N_("do not install artifacts"), NULL},
  { "excludeconfigs", '\0', POPT_BIT_SET|POPT_ARGFLAG_DOC_HIDDEN,
 	&rpmIArgs.transFlags, RPMTRANS_FLAG_NOCONFIGS,
 	N_("do not install configuration files"), NULL},

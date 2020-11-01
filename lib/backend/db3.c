@@ -11,6 +11,7 @@ static int _debug = 1;	/* XXX if < 0 debugging, > 0 unusual error returns */
 #include <popt.h>
 #include <db.h>
 #include <signal.h>
+#include <fcntl.h>
 
 #include <rpm/rpmtypes.h>
 #include <rpm/rpmmacro.h>
@@ -415,10 +416,6 @@ static int db_init(rpmdb rdb, const char * dbhome)
     if (rdb->db_dbenv != NULL) {
 	rdb->db_opens++;
 	return 0;
-    } else {
-	/* On first call, set backend description to something... */
-	free(rdb->db_descr);
-	rasprintf(&rdb->db_descr, "db%u", DB_VERSION_MAJOR);
     }
 
     /*
@@ -927,7 +924,7 @@ static int db3_dbiOpen(rpmdb rdb, rpmDbiTagVal rpmtag, dbiIndex * dbip, int flag
  * Convert retrieved data to index set.
  * @param dbi		index database handle
  * @param data		retrieved data
- * @retval setp		(malloc'ed) index set
+ * @param[out] setp		(malloc'ed) index set
  * @return		0 on success
  */
 static int dbt2set(dbiIndex dbi, DBT * data, dbiIndexSet * setp)
@@ -1012,7 +1009,7 @@ static rpmRC db3_idxdbGet(dbiIndex dbi, dbiCursor dbc, const char *keyp, size_t 
 			  dbiIndexSet *set, int searchType)
 {
     rpmRC rc = RPMRC_FAIL; /* assume failure */
-    if (dbi != NULL && dbc != NULL && set != NULL) {
+    if (dbi != NULL && dbc != NULL) {
 	int cflags = DB_NEXT;
 	int dbrc;
 	DBT data, key;
@@ -1037,12 +1034,14 @@ static rpmRC db3_idxdbGet(dbiIndex dbi, dbiCursor dbc, const char *keyp, size_t 
 	    if (searchType == DBC_PREFIX_SEARCH &&
 		    (key.size < keylen || memcmp(key.data, keyp, keylen) != 0))
 		break;
-	    dbt2set(dbi, &data, &newset);
-	    if (*set == NULL) {
-		*set = newset;
-	    } else {
-		dbiIndexSetAppendSet(*set, newset, 0);
-		dbiIndexSetFree(newset);
+	    if (set) {
+		dbt2set(dbi, &data, &newset);
+		if (*set == NULL) {
+		    *set = newset;
+		} else {
+		    dbiIndexSetAppendSet(*set, newset, 0);
+		    dbiIndexSetFree(newset);
+		}
 	    }
 	    if (searchType != DBC_PREFIX_SEARCH)
 		break;
@@ -1052,7 +1051,7 @@ static rpmRC db3_idxdbGet(dbiIndex dbi, dbiCursor dbc, const char *keyp, size_t 
 	}
 
 	/* fixup result status for prefix search */
-	if (searchType == DBC_PREFIX_SEARCH) {
+	if (searchType == DBC_PREFIX_SEARCH && set) {
 	    if (dbrc == DB_NOTFOUND && *set != NULL && (*set)->count > 0)
 		dbrc = 0;
 	    else if (dbrc == 0 && (*set == NULL || (*set)->count == 0))
@@ -1115,7 +1114,7 @@ static rpmRC updateIndex(dbiCursor dbc, const char *keyp, unsigned int keylen,
     return rc;
 }
 
-static rpmRC db3_idxdbPut(dbiIndex dbi, dbiCursor dbc, const char *keyp, size_t keylen,
+static rpmRC db3_idxdbPutOne(dbiIndex dbi, dbiCursor dbc, const char *keyp, size_t keylen,
 	       dbiIndexItem rec)
 {
     dbiIndexSet set = NULL;
@@ -1141,7 +1140,12 @@ static rpmRC db3_idxdbPut(dbiIndex dbi, dbiCursor dbc, const char *keyp, size_t 
     return rc;
 }
 
-static rpmRC db3_idxdbDel(dbiIndex dbi, dbiCursor dbc, const char *keyp, size_t keylen,
+static rpmRC db3_idxdbPut(dbiIndex dbi, rpmTagVal rpmtag, unsigned int hdrNum, Header h)
+{
+    return tag2index(dbi, rpmtag, hdrNum, h, db3_idxdbPutOne);
+}
+
+static rpmRC db3_idxdbDelOne(dbiIndex dbi, dbiCursor dbc, const char *keyp, size_t keylen,
 	       dbiIndexItem rec)
 {
     dbiIndexSet set = NULL;
@@ -1169,6 +1173,11 @@ static rpmRC db3_idxdbDel(dbiIndex dbi, dbiCursor dbc, const char *keyp, size_t 
     dbiIndexSetFree(set);
 
     return rc;
+}
+
+static rpmRC db3_idxdbDel(dbiIndex dbi, rpmTagVal rpmtag, unsigned int hdrNum, Header h)
+{
+    return tag2index(dbi, rpmtag, hdrNum, h, db3_idxdbDelOne);
 }
 
 static const void * db3_idxdbKey(dbiIndex dbi, dbiCursor dbc, unsigned int *keylen)
@@ -1278,14 +1287,26 @@ static unsigned int pkgInstance(dbiIndex dbi, int alloc)
     return hdrNum;
 }
 
-static rpmRC db3_pkgdbPut(dbiIndex dbi, dbiCursor dbc,  unsigned int hdrNum,
+static rpmRC db3_pkgdbPut(dbiIndex dbi, dbiCursor dbc,  unsigned int *hdrNum,
                unsigned char *hdrBlob, unsigned int hdrLen)
 {
+    rpmRC rc = RPMRC_FAIL;
+    unsigned int hnum = *hdrNum;
     DBT hdr;
     memset(&hdr, 0, sizeof(hdr));
     hdr.data = hdrBlob;
     hdr.size = hdrLen;
-    return updatePackages(dbc, hdrNum, &hdr);
+
+    if (hnum == 0)
+	hnum = pkgInstance(dbi, 1);
+
+    if (hnum)
+	rc = updatePackages(dbc, hnum, &hdr);
+
+    if (rc == RPMRC_OK)
+	*hdrNum = hnum;
+
+    return rc;
 }
 
 static rpmRC db3_pkgdbDel(dbiIndex dbi, dbiCursor dbc,  unsigned int hdrNum)
@@ -1342,19 +1363,10 @@ static unsigned int db3_pkgdbKey(dbiIndex dbi, dbiCursor dbc)
     return mi_offset.ui;
 }
 
-static rpmRC db3_pkgdbNew(dbiIndex dbi, dbiCursor dbc, unsigned int *hdrNum)
-{
-    unsigned int num;
-    if (dbc == NULL)
-	return RPMRC_FAIL;
-    num = pkgInstance(dbc->dbi, 1);
-    if (!num)
-	return RPMRC_FAIL;
-    *hdrNum = num;
-    return RPMRC_OK;
-}
-
 struct rpmdbOps_s db3_dbops = {
+    .name   = "bdb",
+    .path   = "Packages",
+
     .open   = db3_dbiOpen,
     .close  = db3_dbiClose,
     .verify = db3_dbiVerify,
@@ -1368,7 +1380,6 @@ struct rpmdbOps_s db3_dbops = {
     .pkgdbGet = db3_pkgdbGet,
     .pkgdbPut = db3_pkgdbPut,
     .pkgdbDel = db3_pkgdbDel,
-    .pkgdbNew = db3_pkgdbNew,
     .pkgdbKey = db3_pkgdbKey,
 
     .idxdbGet = db3_idxdbGet,

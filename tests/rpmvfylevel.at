@@ -3,9 +3,7 @@ AT_BANNER([RPM signature/digest verifylevel])
 AT_SETUP([rpmkeys -K <unsigned 1> verifylevel])
 AT_KEYWORDS([rpmkeys digest])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
-rm -rf "${TOPDIR}"
 
 for lvl in none digest signature all; do
     echo "LEVEL ${lvl}"
@@ -77,9 +75,7 @@ AT_CLEANUP
 AT_SETUP([rpmkeys -K <unsigned 2> verifylevel])
 AT_KEYWORDS([rpmkeys digest])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
-rm -rf "${TOPDIR}"
 
 nomd5="0x20000"
 nopld="0x10000"
@@ -117,6 +113,7 @@ nopl
     Header SHA256 digest: OK
     Header SHA1 digest: OK
     Payload SHA256 digest: NOTFOUND
+    Payload SHA256 ALT digest: NOTFOUND
     MD5 digest: NOTFOUND
 1
 nosha1
@@ -150,9 +147,7 @@ AT_CLEANUP
 AT_SETUP([rpmkeys -K <signed 1> verifylevel])
 AT_KEYWORDS([rpmkeys digest])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
-rm -rf "${TOPDIR}"
 
 for lvl in none digest signature all; do
     echo "LEVEL ${lvl}"
@@ -224,9 +219,7 @@ AT_CLEANUP
 AT_SETUP([rpmkeys -K <signed 2> verifylevel])
 AT_KEYWORDS([rpmkeys digest])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
-rm -rf "${TOPDIR}"
 
 runroot rpmkeys --import /data/keys/rpm.org-rsa-2048-test.pub
 for lvl in none digest signature all; do
@@ -299,9 +292,7 @@ AT_CLEANUP
 AT_SETUP([rpmkeys -K <signed 3> verifylevel])
 AT_KEYWORDS([rpmkeys digest])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
-rm -rf "${TOPDIR}"
 
 nomd5="0x20000"
 nopld="0x10000"
@@ -338,6 +329,7 @@ noplds
     Header SHA256 digest: OK
     Header SHA1 digest: OK
     Payload SHA256 digest: NOTFOUND
+    Payload SHA256 ALT digest: NOTFOUND
     RSA signature: NOTFOUND
     DSA signature: NOTFOUND
     MD5 digest: OK

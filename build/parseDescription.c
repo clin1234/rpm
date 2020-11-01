@@ -19,8 +19,9 @@ int parseDescription(rpmSpec spec)
     int rc, argc;
     int arg;
     const char **argv = NULL;
-    const char *name = NULL;
-    const char *lang = RPMBUILD_DEFAULT_LANG;
+    char *name = NULL;
+    char *lang = NULL;
+    const char *descr = "";
     poptContext optCon = NULL;
     struct poptOption optionsTable[] = {
 	{ NULL, 'n', POPT_ARG_STRING, &name, 'n', NULL, NULL},
@@ -51,7 +52,7 @@ int parseDescription(rpmSpec spec)
 
     if (poptPeekArg(optCon)) {
 	if (name == NULL)
-	    name = poptGetArg(optCon);
+	    name = xstrdup(poptGetArg(optCon));
 	if (poptPeekArg(optCon)) {
 	    rpmlog(RPMLOG_ERR, _("line %d: Too many names: %s\n"),
 		     spec->lineNum,
@@ -68,14 +69,21 @@ int parseDescription(rpmSpec spec)
 	goto exit;
     }
 
-    stripTrailingBlanksStringBuf(sb);
+    if (sb) {
+	stripTrailingBlanksStringBuf(sb);
+	descr = getStringBuf(sb);
+    }
+
     if (addLangTag(spec, pkg->header,
-		   RPMTAG_DESCRIPTION, getStringBuf(sb), lang)) {
+		   RPMTAG_DESCRIPTION, descr,
+		   lang ? lang : RPMBUILD_DEFAULT_LANG)) {
 	nextPart = PART_ERROR;
     }
      
 exit:
     freeStringBuf(sb);
+    free(lang);
+    free(name);
     free(argv);
     poptFreeContext(optCon);
     return nextPart;

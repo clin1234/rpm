@@ -157,7 +157,7 @@ while [ $# -gt 0 ]; do
     include_gdb_index=true
     ;;
   -o)
-    if [ -z "${lists[$nout]}" -a -z "${ptns[$nout]}" ]; then
+    if [ -z "${lists[$nout]}" ] && [ -z "${ptns[$nout]}" ]; then
       out=$2
     else
       outs[$nout]=$2
@@ -213,7 +213,7 @@ if test -n "$build_id_seed" -a "$no_recompute_build_id" = "true"; then
   exit 2
 fi
 
-if ("$strip_g" = "true") && ("$strip_glibs" = "true"); then
+if [ "$strip_g" = "true" ] && [ "$strip_glibs" = "true" ]; then
   echo >&2 "*** ERROR: -g  and --g-libs cannot be used together"
   exit 2
 fi
@@ -405,6 +405,10 @@ do_file()
     fi
   fi
 
+  # Compress any annobin notes in the original binary.
+  # Ignore any errors, since older objcopy don't support --merge-notes.
+  objcopy --merge-notes "$f" 2>/dev/null || true
+
   # A binary already copied into /usr/lib/debug doesn't get stripped,
   # just has its file names collected and adjusted.
   case "$dn" in
@@ -424,7 +428,7 @@ do_file()
   # strip -g implies we have full symtab, don't add mini symtab in that case.
   # It only makes sense to add a minisymtab for executables and shared
   # libraries. Other executable ELF files (like kernel modules) don't need it.
-  if [ "$include_minidebug" = "true" -a "$strip_g" = "false" ]; then
+  if [ "$include_minidebug" = "true" ] && [ "$strip_g" = "false" ]; then
     skip_mini=true
     if [ "$strip_glibs" = "false" ]; then
       case "$(file -bi "$f")" in
@@ -494,6 +498,7 @@ else
     wait
   )
   for f in "$temp"/res.*; do
+    test -f "$f" || continue
     res=$(< "$f")
     if [ "$res" !=  "0" ]; then
       exit 1
@@ -535,15 +540,11 @@ if $run_dwz \
     echo "original debug info size: ${size_before}kB, size after compression: ${size_after}kB"
     # Remove .dwz directory if empty
     rmdir "${RPM_BUILD_ROOT}/usr/lib/debug/.dwz" 2>/dev/null
-    if [ -f "${RPM_BUILD_ROOT}/usr/lib/debug/.dwz/${dwz_multifile_name}" ]; then
-      id="`readelf -Wn "${RPM_BUILD_ROOT}/usr/lib/debug/.dwz/${dwz_multifile_name}" \
-	     2>/dev/null | sed -n 's/^    Build ID: \([0-9a-f]\+\)/\1/p'`"
-    fi
 
     # dwz invalidates .gnu_debuglink CRC32 in the main files.
     cat "$ELFBINSFILE" |
     (cd "$RPM_BUILD_ROOT"; \
-     xargs -d '\n' ${lib_rpm_dir}/sepdebugcrcfix usr/lib/debug)
+     tr '\n' '\0' | xargs -0 ${lib_rpm_dir}/sepdebugcrcfix usr/lib/debug)
   fi
 fi
 
@@ -583,7 +584,7 @@ if [ -s "$SOURCEFILE" ]; then
   xargs --no-run-if-empty -0 chmod 0755
 fi
 
-if [ -d "${RPM_BUILD_ROOT}/usr/lib" -o -d "${RPM_BUILD_ROOT}/usr/src" ]; then
+if [ -d "${RPM_BUILD_ROOT}/usr/lib" ] || [ -d "${RPM_BUILD_ROOT}/usr/src" ]; then
   ((nout > 0)) ||
   test ! -d "${RPM_BUILD_ROOT}/usr/lib" ||
   (cd "${RPM_BUILD_ROOT}/usr/lib"; find debug -type d) |
@@ -660,18 +661,28 @@ while ((i < nout)); do
   ((++i))
 done
 if ((nout > 0)); then
-  # Now add the right %dir lines to each output list.
-  (cd "${RPM_BUILD_ROOT}"; find usr/lib/debug -type d) |
-  sed 's#^.*$#\\@^/&/@{h;s@^.*$@%dir /&@p;g;}#' |
-  LC_ALL=C sort -ur > "${LISTFILE}.dirs.sed"
+  # Generate %dir lines for each output list.
+  generate_percent_dir()
+  {
+    while read -r line; do
+      while test "${line:0:15}" = "/usr/lib/debug/"; do
+        line="${line%/*}"
+        printf '%s\n' "$line"
+      done
+    done | \
+    sort -u | \
+    while read -r line; do
+      test -d "${RPM_BUILD_ROOT}$line" && printf '%%dir %s\n' "$line"
+    done
+  }
   i=0
   while ((i < nout)); do
-    sed -n -f "${LISTFILE}.dirs.sed" "${outs[$i]}" | sort -u > "${outs[$i]}.new"
+    generate_percent_dir < "${outs[$i]}" > "${outs[$i]}.new"
     cat "${outs[$i]}" >> "${outs[$i]}.new"
     mv -f "${outs[$i]}.new" "${outs[$i]}"
     ((++i))
   done
-  sed -n -f "${LISTFILE}.dirs.sed" "${LISTFILE}" | sort -u > "${LISTFILE}.new"
+  generate_percent_dir < "${LISTFILE}" > "${LISTFILE}.new"
   cat "$LISTFILE" >> "${LISTFILE}.new"
   mv "${LISTFILE}.new" "$LISTFILE"
 fi

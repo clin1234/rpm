@@ -24,8 +24,6 @@
 
 #include "debug.h"
 
-int _print_pkts = 0;
-
 static int doImport(rpmts ts, const char *fn, char *buf, ssize_t blen)
 {
     char const * const pgpmark = "-----BEGIN PGP ";
@@ -189,6 +187,7 @@ rpmRC rpmpkgRead(struct rpmvs_s *vs, FD_t fd,
 
     /* Fish interesting tags from the main header. This is a bit hacky... */
     rpmvsAppendTag(vs, blob, RPMTAG_PAYLOADDIGEST);
+    rpmvsAppendTag(vs, blob, RPMTAG_PAYLOADDIGESTALT);
 
     /* If needed and not explicitly disabled, read the payload as well. */
     if (rpmvsRange(vs) & RPMSIG_PAYLOAD) {
@@ -267,8 +266,9 @@ int rpmVerifySignatures(QVA_t qva, rpmts ts, FD_t fd, const char * fn)
     int rc = 1; /* assume failure */
     if (ts && qva && fd && fn) {
 	rpmKeyring keyring = rpmtsGetKeyring(ts, 1);
+	rpmVSFlags vsflags = rpmtsVfyFlags(ts);
 	int vfylevel = rpmtsVfyLevel(ts);
-	rc = rpmpkgVerifySigs(keyring, vfylevel, qva->qva_flags, fd, fn);
+	rc = rpmpkgVerifySigs(keyring, vfylevel, vsflags, fd, fn);
     	rpmKeyringFree(keyring);
     }
     return rc;

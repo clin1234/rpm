@@ -48,7 +48,7 @@ static const char * fileActionString(rpmFileAction a);
  * Build path to file from file info, optionally ornamented with suffix.
  * @param fi		file info iterator
  * @param suffix	suffix to use (NULL disables)
- * @retval		path to file (malloced)
+ * @param[out]		path to file (malloced)
  */
 static char * fsmFsPath(rpmfi fi, const char * suffix)
 {
@@ -69,7 +69,7 @@ typedef struct dnli_s {
 /** \ingroup payload
  * Destroy directory name iterator.
  * @param dnli		directory name iterator
- * @retval		NULL always
+ * @param[out]		NULL always
  */
 static DNLI_t dnlFreeIterator(DNLI_t dnli)
 {
@@ -218,7 +218,7 @@ static void wfd_close(FD_t *wfdp)
 	static int oneshot = 0;
 	static int flush_io = 0;
 	if (!oneshot) {
-	    flush_io = rpmExpandNumeric("%{?_flush_io}");
+	    flush_io = (rpmExpandNumeric("%{?_flush_io}") > 0);
 	    oneshot = 1;
 	}
 	if (flush_io) {
@@ -421,28 +421,19 @@ static int fsmMkdirs(rpmfiles files, rpmfs fs, rpmPlugins plugins)
     DNLI_t dnli = dnlInitIterator(files, fs, 0);
     struct stat sb;
     const char *dpath;
-    int dc = rpmfilesDC(files);
     int rc = 0;
     int i;
-    int ldnlen = 0;
-    int ldnalloc = 0;
-    char * ldn = NULL;
-    short * dnlx = NULL; 
+    size_t ldnlen = 0;
+    const char * ldn = NULL;
 
-    dnlx = (dc ? xcalloc(dc, sizeof(*dnlx)) : NULL);
-
-    if (dnlx != NULL)
     while ((dpath = dnlNextIterator(dnli)) != NULL) {
 	size_t dnlen = strlen(dpath);
 	char * te, dn[dnlen+1];
 
-	dc = dnli->isave;
-	if (dc < 0) continue;
-	dnlx[dc] = dnlen;
 	if (dnlen <= 1)
 	    continue;
 
-	if (dnlen <= ldnlen && rstreq(dpath, ldn))
+	if (dnlen == ldnlen && rstreq(dpath, ldn))
 	    continue;
 
 	/* Copy as we need to modify the string */
@@ -453,26 +444,19 @@ static int fsmMkdirs(rpmfiles files, rpmfs fs, rpmPlugins plugins)
 	    if (*te != '/')
 		continue;
 
-	    *te = '\0';
-
 	    /* Already validated? */
 	    if (i < ldnlen &&
 		(ldn[i] == '/' || ldn[i] == '\0') && rstreqn(dn, ldn, i))
-	    {
-		*te = '/';
-		/* Move pre-existing path marker forward. */
-		dnlx[dc] = (te - dn);
 		continue;
-	    }
 
 	    /* Validate next component of path. */
+	    *te = '\0';
 	    rc = fsmStat(dn, 1, &sb); /* lstat */
 	    *te = '/';
 
 	    /* Directory already exists? */
 	    if (rc == 0 && S_ISDIR(sb.st_mode)) {
-		/* Move pre-existing path marker forward. */
-		dnlx[dc] = (te - dn);
+		continue;
 	    } else if (rc == RPMERR_ENOENT) {
 		*te = '\0';
 		mode_t mode = S_IFDIR | (_dirPerms & 07777);
@@ -505,17 +489,9 @@ static int fsmMkdirs(rpmfiles files, rpmfs fs, rpmPlugins plugins)
 	if (rc) break;
 
 	/* Save last validated path. */
-	if (ldnalloc < (dnlen + 1)) {
-	    ldnalloc = dnlen + 100;
-	    ldn = xrealloc(ldn, ldnalloc);
-	}
-	if (ldn != NULL) { /* XXX can't happen */
-	    strcpy(ldn, dn);
-	    ldnlen = dnlen;
-	}
+	ldn = dpath;
+	ldnlen = dnlen;
     }
-    free(dnlx);
-    free(ldn);
     dnlFreeIterator(dnli);
 
     return rc;
@@ -926,10 +902,6 @@ int rpmPackageFilesInstall(rpmts ts, rpmte te, rpmfiles files,
         if (!skip) {
 	    int setmeta = 1;
 
-	    /* When touching we don't need any of this... */
-	    if (action == FA_TOUCH)
-		goto touch;
-
 	    /* Directories replacing something need early backup */
 	    if (!suffix) {
 		rc = fsmBackup(fi, action);
@@ -940,6 +912,17 @@ int rpmPackageFilesInstall(rpmts ts, rpmte te, rpmfiles files,
 	    } else {
 		rc = RPMERR_ENOENT;
 	    }
+
+	    /* See if the file was removed while our attention was elsewhere */
+	    if (rc == RPMERR_ENOENT && action == FA_TOUCH) {
+		rpmlog(RPMLOG_DEBUG, "file %s vanished unexpectedly\n", fpath);
+		action = FA_CREATE;
+		fsmDebug(fpath, action, &sb);
+	    }
+
+	    /* When touching we don't need any of this... */
+	    if (action == FA_TOUCH)
+		goto touch;
 
             if (S_ISREG(sb.st_mode)) {
 		if (rc == RPMERR_ENOENT) {

@@ -23,11 +23,7 @@ AT_BANNER([RPM buildid tests])
 AT_SETUP([rpmbuild buildid none])
 AT_KEYWORDS([build] [debuginfo] [buildid])
 AT_CHECK([
-rm -rf ${TOPDIR}
-AS_MKDIR_P(${TOPDIR}/SOURCES)
-
-# Setup sources
-cp "${abs_srcdir}"/data/SOURCES/hello-1.0.tar.gz "${abs_srcdir}"/data/SOURCES/hello-1.0-modernize.patch ${TOPDIR}/SOURCES
+RPMDB_INIT
 
 # Build, contains one ELF which should have a buildid.
 rundebug rpmbuild \
@@ -36,11 +32,11 @@ rundebug rpmbuild \
 
 # There should be zero build-id files in both the main and debuginfo package
 echo -n "hello build-id files: "
-run rpm -ql -p "${TOPDIR}"/RPMS/*/hello-1.0-1.*.rpm \
+runroot rpm -ql -p /build/RPMS/*/hello-1.0-1.*.rpm \
   | grep /.build-id/ | wc --lines
 
 echo -n "hello debuginfo build-id files: "
-run rpm -ql -p "${TOPDIR}"/RPMS/*/hello-debuginfo-1.0-1.*.rpm \
+runroot rpm -ql -p /build/RPMS/*/hello-debuginfo-1.0-1.*.rpm \
   | grep /.build-id/ | wc --lines
 
 ],
@@ -57,11 +53,7 @@ AT_CLEANUP
 AT_SETUP([rpmbuild buildid alldebug])
 AT_KEYWORDS([build] [debuginfo] [buildid])
 AT_CHECK([
-rm -rf ${TOPDIR}
-AS_MKDIR_P(${TOPDIR}/SOURCES)
-
-# Setup sources
-cp "${abs_srcdir}"/data/SOURCES/hello-1.0.tar.gz "${abs_srcdir}"/data/SOURCES/hello-1.0-modernize.patch ${TOPDIR}/SOURCES
+RPMDB_INIT
 
 # Build, contains one ELF which should have a buildid.
 rundebug rpmbuild \
@@ -74,18 +66,18 @@ rundebug rpmbuild \
 # Main and debug should be in the debuginfo package,
 # plus the .build-id/xx subdir, 3 in total.
 echo -n "hello build-id files: "
-run rpm -ql -p "${TOPDIR}"/RPMS/*/hello-1.0-1.*.rpm \
+runroot rpm -ql -p /build/RPMS/*/hello-1.0-1.*.rpm \
   | grep /.build-id/ | wc --lines
 
 echo -n "hello debuginfo build-id files: "
-run rpm -ql -p "${TOPDIR}"/RPMS/*/hello-debuginfo-1.0-1.*.rpm \
+runroot rpm -ql -p /build/RPMS/*/hello-debuginfo-1.0-1.*.rpm \
   | grep /.build-id/ | wc --lines
 
 # Extract the both packages to check the build-id files link to the
 # main and .debug files.
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello-1.0-1.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello-1.0-1.*.rpm \
   | cpio -diu
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello-debuginfo-1.0-1.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello-debuginfo-1.0-1.*.rpm \
   | cpio -diu
 
 # Check there is a build-id symlink for the main file.
@@ -149,11 +141,7 @@ AT_CLEANUP
 AT_SETUP([rpmbuild buildid alldebug unique debug names])
 AT_KEYWORDS([build] [debuginfo] [buildid])
 AT_CHECK([
-rm -rf ${TOPDIR}
-AS_MKDIR_P(${TOPDIR}/SOURCES)
-
-# Setup sources
-cp "${abs_srcdir}"/data/SOURCES/hello-1.0.tar.gz "${abs_srcdir}"/data/SOURCES/hello-1.0-modernize.patch ${TOPDIR}/SOURCES
+RPMDB_INIT
 
 # Build, contains one ELF which should have a buildid.
 rundebug rpmbuild \
@@ -165,18 +153,18 @@ rundebug rpmbuild \
 # Main and debug should be in the debuginfo package,
 # plus the .build-id/xx subdir, 3 in total.
 echo -n "hello build-id files: "
-run rpm -ql -p "${TOPDIR}"/RPMS/*/hello-1.0-1.*.rpm \
+runroot rpm -ql -p /build/RPMS/*/hello-1.0-1.*.rpm \
   | grep /.build-id/ | wc --lines
 
 echo -n "hello debuginfo build-id files: "
-run rpm -ql -p "${TOPDIR}"/RPMS/*/hello-debuginfo-1.0-1.*.rpm \
+runroot rpm -ql -p /build/RPMS/*/hello-debuginfo-1.0-1.*.rpm \
   | grep /.build-id/ | wc --lines
 
 # Extract the both packages to check the build-id files link to the
 # main and .debug files.
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello-1.0-1.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello-1.0-1.*.rpm \
   | cpio -diu
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello-debuginfo-1.0-1.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello-debuginfo-1.0-1.*.rpm \
   | cpio -diu
 
 # Check there is a build-id symlink for the main file.
@@ -240,11 +228,7 @@ AT_CLEANUP
 AT_SETUP([rpmbuild buildid separate])
 AT_KEYWORDS([build] [debuginfo] [buildid])
 AT_CHECK([
-rm -rf ${TOPDIR}
-AS_MKDIR_P(${TOPDIR}/SOURCES)
-
-# Setup sources
-cp "${abs_srcdir}"/data/SOURCES/hello-1.0.tar.gz "${abs_srcdir}"/data/SOURCES/hello-1.0-modernize.patch ${TOPDIR}/SOURCES
+RPMDB_INIT
 
 # Build, contains one ELF which should have a buildid.
 rundebug rpmbuild \
@@ -256,18 +240,18 @@ rundebug rpmbuild \
 # There should be one build-id files in the main and debuginfo package
 # plus the .build-id/xx subdir, 2 in total.
 echo -n "hello build-id files: "
-run rpm -ql -p "${TOPDIR}"/RPMS/*/hello-1.0-1.*.rpm \
+runroot rpm -ql -p /build/RPMS/*/hello-1.0-1.*.rpm \
   | grep /.build-id/ | wc --lines
 
 echo -n "hello debuginfo build-id files: "
-run rpm -ql -p "${TOPDIR}"/RPMS/*/hello-debuginfo-1.0-1.*.rpm \
+runroot rpm -ql -p /build/RPMS/*/hello-debuginfo-1.0-1.*.rpm \
   | grep /.build-id/ | wc --lines
 
 # Extract the both packages to check the build-id files link to the
 # main and .debug files.
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello-1.0-1.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello-1.0-1.*.rpm \
   | cpio -diu
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello-debuginfo-1.0-1.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello-debuginfo-1.0-1.*.rpm \
   | cpio -diu
 
 # Check there is a build-id symlink for the main file.
@@ -331,11 +315,7 @@ AT_CLEANUP
 AT_SETUP([rpmbuild buildid separate unique debug names])
 AT_KEYWORDS([build] [debuginfo] [buildid])
 AT_CHECK([
-rm -rf ${TOPDIR}
-AS_MKDIR_P(${TOPDIR}/SOURCES)
-
-# Setup sources
-cp "${abs_srcdir}"/data/SOURCES/hello-1.0.tar.gz "${abs_srcdir}"/data/SOURCES/hello-1.0-modernize.patch ${TOPDIR}/SOURCES
+RPMDB_INIT
 
 # Build, contains one ELF which should have a buildid.
 rundebug rpmbuild \
@@ -346,18 +326,18 @@ rundebug rpmbuild \
 # There should be one build-id files in the main and debuginfo package
 # plus the .build-id/xx subdir, 2 in total.
 echo -n "hello build-id files: "
-run rpm -ql -p "${TOPDIR}"/RPMS/*/hello-1.0-1.*.rpm \
+runroot rpm -ql -p /build/RPMS/*/hello-1.0-1.*.rpm \
   | grep /.build-id/ | wc --lines
 
 echo -n "hello debuginfo build-id files: "
-run rpm -ql -p "${TOPDIR}"/RPMS/*/hello-debuginfo-1.0-1.*.rpm \
+runroot rpm -ql -p /build/RPMS/*/hello-debuginfo-1.0-1.*.rpm \
   | grep /.build-id/ | wc --lines
 
 # Extract the both packages to check the build-id files link to the
 # main and .debug files.
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello-1.0-1.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello-1.0-1.*.rpm \
   | cpio -diu
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello-debuginfo-1.0-1.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello-debuginfo-1.0-1.*.rpm \
   | cpio -diu
 
 # Check there is a build-id symlink for the main file.
@@ -421,11 +401,7 @@ AT_CLEANUP
 AT_SETUP([rpmbuild buildid compat])
 AT_KEYWORDS([build] [debuginfo] [buildid])
 AT_CHECK([
-rm -rf ${TOPDIR}
-AS_MKDIR_P(${TOPDIR}/SOURCES)
-
-# Setup sources
-cp "${abs_srcdir}"/data/SOURCES/hello-1.0.tar.gz "${abs_srcdir}"/data/SOURCES/hello-1.0-modernize.patch ${TOPDIR}/SOURCES
+RPMDB_INIT
 
 # Build, contains one ELF which should have a buildid.
 rundebug rpmbuild \
@@ -438,18 +414,18 @@ rundebug rpmbuild \
 # the debuginfo package has one extra main build-id compat symlink
 # plus the .build-id/xx subdir, 2 in total in main, 3 in total in debug
 echo -n "hello build-id files: "
-run rpm -ql -p "${TOPDIR}"/RPMS/*/hello-1.0-1.*.rpm \
+runroot rpm -ql -p /build/RPMS/*/hello-1.0-1.*.rpm \
   | grep /.build-id/ | wc --lines
 
 echo -n "hello debuginfo build-id files: "
-run rpm -ql -p "${TOPDIR}"/RPMS/*/hello-debuginfo-1.0-1.*.rpm \
+runroot rpm -ql -p /build/RPMS/*/hello-debuginfo-1.0-1.*.rpm \
   | grep /.build-id/ | wc --lines
 
 # Extract the both packages to check the build-id files link to the
 # main and .debug files.
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello-1.0-1.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello-1.0-1.*.rpm \
   | cpio -diu
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello-debuginfo-1.0-1.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello-debuginfo-1.0-1.*.rpm \
   | cpio -diu
 
 # Check there is a build-id symlink for the main file.
@@ -525,11 +501,7 @@ AT_CLEANUP
 AT_SETUP([rpmbuild buildid compat unique debug names])
 AT_KEYWORDS([build] [debuginfo] [buildid])
 AT_CHECK([
-rm -rf ${TOPDIR}
-AS_MKDIR_P(${TOPDIR}/SOURCES)
-
-# Setup sources
-cp "${abs_srcdir}"/data/SOURCES/hello-1.0.tar.gz "${abs_srcdir}"/data/SOURCES/hello-1.0-modernize.patch ${TOPDIR}/SOURCES
+RPMDB_INIT
 
 # Build, contains one ELF which should have a buildid.
 rundebug rpmbuild \
@@ -541,18 +513,18 @@ rundebug rpmbuild \
 # the debuginfo package has one extra main build-id compat symlink
 # plus the .build-id/xx subdir, 2 in total in main, 3 in total in debug
 echo -n "hello build-id files: "
-run rpm -ql -p "${TOPDIR}"/RPMS/*/hello-1.0-1.*.rpm \
+runroot rpm -ql -p /build/RPMS/*/hello-1.0-1.*.rpm \
   | grep /.build-id/ | wc --lines
 
 echo -n "hello debuginfo build-id files: "
-run rpm -ql -p "${TOPDIR}"/RPMS/*/hello-debuginfo-1.0-1.*.rpm \
+runroot rpm -ql -p /build/RPMS/*/hello-debuginfo-1.0-1.*.rpm \
   | grep /.build-id/ | wc --lines
 
 # Extract the both packages to check the build-id files link to the
 # main and .debug files.
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello-1.0-1.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello-1.0-1.*.rpm \
   | cpio -diu
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello-debuginfo-1.0-1.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello-debuginfo-1.0-1.*.rpm \
   | cpio -diu
 
 # Check there is a build-id symlink for the main file.
@@ -629,18 +601,14 @@ AT_CLEANUP
 AT_SETUP([rpmbuild buildid duplicate alldebug])
 AT_KEYWORDS([build] [debuginfo] [buildid])
 AT_CHECK([
-rm -rf ${TOPDIR}
-AS_MKDIR_P(${TOPDIR}/SOURCES)
-
-cp "${abs_srcdir}"/data/SOURCES/hello-1.0.tar.gz "${abs_srcdir}"/data/SOURCES/hello-1.0-modernize.patch ${TOPDIR}/SOURCES
-
+RPMDB_INIT
 # Should create two warnings
 rundebug rpmbuild --quiet \
   --define="_build_id_links alldebug" \
   -ba "${abs_srcdir}"/data/SPECS/hello2cp.spec 2>&1 | grep "^warning: " \
   | cut -f1-3 -d' '
 
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello2-1.0-1.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello2-1.0-1.*.rpm \
   | cpio -diu --quiet
 
 hello_file=./usr/local/bin/hello
@@ -654,7 +622,7 @@ test -L "$id_file" && echo "main id in main package"
 id_dup_file="./usr/lib/debug/.build-id/${id:0:2}/${id:2}.1"
 test -L "$id_dup_file" && echo "main dup id in main package"
 
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello2-debuginfo-1.0-1.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello2-debuginfo-1.0-1.*.rpm \
   | cpio -diu --quiet
 
 # alldebug, so they are all here
@@ -697,18 +665,14 @@ AT_CLEANUP
 AT_SETUP([rpmbuild buildid hardlink alldebug])
 AT_KEYWORDS([build] [debuginfo] [buildid])
 AT_CHECK([
-rm -rf ${TOPDIR}
-AS_MKDIR_P(${TOPDIR}/SOURCES)
-
-cp "${abs_srcdir}"/data/SOURCES/hello-1.0.tar.gz "${abs_srcdir}"/data/SOURCES/hello-1.0-modernize.patch ${TOPDIR}/SOURCES
-
+RPMDB_INIT
 # No warnings for hard links
 rundebug rpmbuild --quiet \
   --define="_build_id_links alldebug" \
   -ba "${abs_srcdir}"/data/SPECS/hello2ln.spec 2>&1 | grep "^warning: " \
   | cut -f1-3 -d' '
 
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello2-1.0-1.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello2-1.0-1.*.rpm \
   | cpio -diu --quiet
 
 hello_file=./usr/local/bin/hello
@@ -722,7 +686,7 @@ test -L "$id_file" && echo "main id in main package"
 id_dup_file="./usr/lib/debug/.build-id/${id:0:2}/${id:2}.1"
 test -L "$id_dup_file" && echo "main dup id in main package"
 
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello2-debuginfo-1.0-1.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello2-debuginfo-1.0-1.*.rpm \
   | cpio -diu --quiet
 
 # alldebug, so they are all here
@@ -762,18 +726,14 @@ AT_CLEANUP
 AT_SETUP([rpmbuild buildid duplicate separate])
 AT_KEYWORDS([build] [debuginfo] [buildid])
 AT_CHECK([
-rm -rf ${TOPDIR}
-AS_MKDIR_P(${TOPDIR}/SOURCES)
-
-cp "${abs_srcdir}"/data/SOURCES/hello-1.0.tar.gz "${abs_srcdir}"/data/SOURCES/hello-1.0-modernize.patch ${TOPDIR}/SOURCES
-
+RPMDB_INIT
 # Should create two warnings
 rundebug rpmbuild --quiet \
   --define="_build_id_links separate" \
   -ba "${abs_srcdir}"/data/SPECS/hello2cp.spec 2>&1 | grep "^warning: " \
   | cut -f1-3 -d' '
 
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello2-1.0-1.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello2-1.0-1.*.rpm \
   | cpio -diu --quiet
 
 hello_file=./usr/local/bin/hello
@@ -787,7 +747,7 @@ test -L "$id_file" && echo "main id in main package"
 id_dup_file="./usr/lib/.build-id/${id:0:2}/${id:2}.1"
 test -L "$id_dup_file" && echo "main dup id in main package"
 
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello2-debuginfo-1.0-1.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello2-debuginfo-1.0-1.*.rpm \
   | cpio -diu --quiet
 
 # separate, so debug ids are here
@@ -827,18 +787,14 @@ AT_CLEANUP
 AT_SETUP([rpmbuild buildid hardlink separate])
 AT_KEYWORDS([build] [debuginfo] [buildid])
 AT_CHECK([
-rm -rf ${TOPDIR}
-AS_MKDIR_P(${TOPDIR}/SOURCES)
-
-cp "${abs_srcdir}"/data/SOURCES/hello-1.0.tar.gz "${abs_srcdir}"/data/SOURCES/hello-1.0-modernize.patch ${TOPDIR}/SOURCES
-
+RPMDB_INIT
 # No warnings for hard links
 rundebug rpmbuild --quiet \
   --define="_build_id_links separate" \
   -ba "${abs_srcdir}"/data/SPECS/hello2ln.spec 2>&1 | grep "^warning: " \
   | cut -f1-3 -d' '
 
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello2-1.0-1.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello2-1.0-1.*.rpm \
   | cpio -diu --quiet
 
 hello_file=./usr/local/bin/hello
@@ -852,7 +808,7 @@ test -L "$id_file" && echo "main id in main package"
 id_dup_file="./usr/lib/.build-id/${id:0:2}/${id:2}.1"
 test -L "$id_dup_file" && echo "main dup id in main package"
 
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello2-debuginfo-1.0-1.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello2-debuginfo-1.0-1.*.rpm \
   | cpio -diu --quiet
 
 # separate, so debug ids are here
@@ -889,18 +845,14 @@ AT_CLEANUP
 AT_SETUP([rpmbuild buildid duplicate compat])
 AT_KEYWORDS([build] [debuginfo] [buildid])
 AT_CHECK([
-rm -rf ${TOPDIR}
-AS_MKDIR_P(${TOPDIR}/SOURCES)
-
-cp "${abs_srcdir}"/data/SOURCES/hello-1.0.tar.gz "${abs_srcdir}"/data/SOURCES/hello-1.0-modernize.patch ${TOPDIR}/SOURCES
-
+RPMDB_INIT
 # Should create two warnings
 rundebug rpmbuild --quiet \
   --define="_build_id_links compat" \
   -ba "${abs_srcdir}"/data/SPECS/hello2cp.spec 2>&1 | grep "^warning: " \
   | cut -f1-3 -d' '
 
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello2-1.0-1.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello2-1.0-1.*.rpm \
   | cpio -diu --quiet
 
 hello_file=./usr/local/bin/hello
@@ -914,7 +866,7 @@ test -L "$id_file" && echo "main id in main package"
 id_dup_file="./usr/lib/.build-id/${id:0:2}/${id:2}.1"
 test -L "$id_dup_file" && echo "main dup id in main package"
 
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello2-debuginfo-1.0-1.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello2-debuginfo-1.0-1.*.rpm \
   | cpio -diu --quiet
 
 # compat, so main (and debug) ids are (also) here
@@ -966,18 +918,14 @@ AT_CLEANUP
 AT_SETUP([rpmbuild buildid hardlink compat])
 AT_KEYWORDS([build] [debuginfo] [buildid])
 AT_CHECK([
-rm -rf ${TOPDIR}
-AS_MKDIR_P(${TOPDIR}/SOURCES)
-
-cp "${abs_srcdir}"/data/SOURCES/hello-1.0.tar.gz "${abs_srcdir}"/data/SOURCES/hello-1.0-modernize.patch ${TOPDIR}/SOURCES
-
+RPMDB_INIT
 # No warnings for hard links
 rundebug rpmbuild --quiet \
   --define="_build_id_links compat" \
   -ba "${abs_srcdir}"/data/SPECS/hello2ln.spec 2>&1 | grep "^warning: " \
   | cut -f1-3 -d' '
 
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello2-1.0-1.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello2-1.0-1.*.rpm \
   | cpio -diu --quiet
 
 hello_file=./usr/local/bin/hello
@@ -991,7 +939,7 @@ test -L "$id_file" && echo "main id in main package"
 id_dup_file="./usr/lib/.build-id/${id:0:2}/${id:2}.1"
 test -L "$id_dup_file" && echo "main dup id in main package"
 
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello2-debuginfo-1.0-1.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello2-debuginfo-1.0-1.*.rpm \
   | cpio -diu --quiet
 
 # compat, so main (and debug) ids are (also) here
@@ -1039,11 +987,7 @@ AT_CLEANUP
 AT_SETUP([rpmbuild buildid recompute])
 AT_KEYWORDS([build] [debuginfo] [buildid])
 AT_CHECK([
-rm -rf ${TOPDIR}
-AS_MKDIR_P(${TOPDIR}/SOURCES)
-
-cp "${abs_srcdir}"/data/SOURCES/hello-1.0.tar.gz "${abs_srcdir}"/data/SOURCES/hello-1.0-modernize.patch ${TOPDIR}/SOURCES
-
+RPMDB_INIT
 # Make sure we get debuginfo
 export CFLAGS="-g"
 
@@ -1053,7 +997,7 @@ rundebug rpmbuild --quiet \
   --undefine="_no_recompute_build_ids" \
   -ba "${abs_srcdir}"/data/SPECS/hello.spec
 
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello-1.0-1.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello-1.0-1.*.rpm \
   | cpio -diu --quiet
 
 hello_file=./usr/local/bin/hello
@@ -1072,7 +1016,7 @@ rundebug rpmbuild --quiet \
   --undefine="_no_recompute_build_ids" \
   -ba "${abs_srcdir}"/data/SPECS/hello-r2.spec
 
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello-1.0-2.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello-1.0-2.*.rpm \
   | cpio -diu --quiet
 
 # Extract the build-id from the main file
@@ -1097,7 +1041,7 @@ rundebug rpmbuild --quiet \
   --define="_no_recompute_build_ids 1" \
   -ba "${abs_srcdir}"/data/SPECS/hello.spec
 
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello-1.0-1.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello-1.0-1.*.rpm \
   | cpio -diu --quiet
 
 hello_file=./usr/local/bin/hello
@@ -1125,7 +1069,7 @@ rundebug rpmbuild --quiet \
   --define="_no_recompute_build_ids 1" \
   -ba "${abs_srcdir}"/data/SPECS/hello-r2.spec
 
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello-1.0-2.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello-1.0-2.*.rpm \
   | cpio -diu --quiet
 
 # Extract the build-id from the main file
@@ -1153,17 +1097,13 @@ AT_CLEANUP
 AT_SETUP([rpmbuild buildid unique r1 r2])
 AT_KEYWORDS([build] [debuginfo] [buildid])
 AT_CHECK([
-rm -rf ${TOPDIR}
-AS_MKDIR_P(${TOPDIR}/SOURCES)
-
-cp "${abs_srcdir}"/data/SOURCES/hello-1.0.tar.gz "${abs_srcdir}"/data/SOURCES/hello-1.0-modernize.patch ${TOPDIR}/SOURCES
-
+RPMDB_INIT
 # No warnings for hard links
 rundebug rpmbuild --quiet \
   --define="_unique_build_ids 1" \
   -ba "${abs_srcdir}"/data/SPECS/hello.spec
 
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello-1.0-1.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello-1.0-1.*.rpm \
   | cpio -diu --quiet
 
 hello_file=./usr/local/bin/hello
@@ -1180,7 +1120,7 @@ rundebug rpmbuild --quiet \
   --define="_unique_build_ids 1" \
   -ba "${abs_srcdir}"/data/SPECS/hello-r2.spec
 
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello-1.0-2.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello-1.0-2.*.rpm \
   | cpio -diu --quiet
 
 # Extract the build-id from the main file
@@ -1201,11 +1141,7 @@ AT_CLEANUP
 AT_SETUP([rpmbuild buildid non-unique r1 r2])
 AT_KEYWORDS([build] [debuginfo] [buildid])
 AT_CHECK([
-rm -rf ${TOPDIR}
-AS_MKDIR_P(${TOPDIR}/SOURCES)
-
-cp "${abs_srcdir}"/data/SOURCES/hello-1.0.tar.gz "${abs_srcdir}"/data/SOURCES/hello-1.0-modernize.patch ${TOPDIR}/SOURCES
-
+RPMDB_INIT
 # No warnings for hard links
 rundebug rpmbuild --quiet \
   --undefine="_unique_build_ids" \
@@ -1213,7 +1149,7 @@ rundebug rpmbuild --quiet \
   --undefine="_unique_debug_srcs" \
   -ba "${abs_srcdir}"/data/SPECS/hello.spec
 
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello-1.0-1.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello-1.0-1.*.rpm \
   | cpio -diu --quiet
 
 hello_file=./usr/local/bin/hello
@@ -1232,7 +1168,7 @@ rundebug rpmbuild --quiet \
   --undefine="_unique_debug_srcs" \
   -ba "${abs_srcdir}"/data/SPECS/hello-r2.spec
 
-rpm2cpio ${abs_builddir}/testing/build/RPMS/*/hello-1.0-2.*.rpm \
+rpm2cpio ${RPMTEST}/build/RPMS/*/hello-1.0-2.*.rpm \
   | cpio -diu --quiet
 
 # Extract the build-id from the main file
@@ -1253,12 +1189,8 @@ AT_CLEANUP
 AT_SETUP([rpmbuild buildid attrs])
 AT_KEYWORDS([build] [debuginfo] [buildid])
 AT_CHECK([
+RPMDB_INIT
 AT_SKIP_IF([$LUA_DISABLED])
-rm -rf ${TOPDIR}
-AS_MKDIR_P(${TOPDIR}/SOURCES)
-
-# Setup sources
-cp "${abs_srcdir}"/data/SOURCES/hello.c ${TOPDIR}/SOURCES
 
 # Build, contains one ELF which should have a buildid.
 rundebug rpmbuild \
@@ -1267,12 +1199,12 @@ rundebug rpmbuild \
   --define "_unique_debug_srcs 1" \
   --quiet -ba "${abs_srcdir}"/data/SPECS/hello-attr-buildid.spec
 
-run rpm -qp --qf "[[%{filenames} %{filemodes:perms}\n]]" \
-        ${abs_builddir}/testing/build/RPMS/*/test-1.0-1*rpm \
+runroot rpm -qp --qf "[[%{filenames} %{filemodes:perms}\n]]" \
+        /build/RPMS/*/test-1.0-1*rpm \
 	| grep "build-id d"
 
-run rpm -qp --qf "[[%{filenames} %{filemodes:perms}\n]]" \
-        ${abs_builddir}/testing/build/RPMS/*/test-debuginfo-1.0-1*rpm \
+runroot rpm -qp --qf "[[%{filenames} %{filemodes:perms}\n]]" \
+        /build/RPMS/*/test-debuginfo-1.0-1*rpm \
 	| grep "build-id d"
 ],
 [0],
@@ -1288,12 +1220,8 @@ AT_CLEANUP
 AT_SETUP([rpmbuild buildid config attrs])
 AT_KEYWORDS([build] [debuginfo] [buildid])
 AT_CHECK([
+RPMDB_INIT
 AT_SKIP_IF([$LUA_DISABLED])
-rm -rf ${TOPDIR}
-AS_MKDIR_P(${TOPDIR}/SOURCES)
-
-# Setup sources
-cp "${abs_srcdir}"/data/SOURCES/hello.c ${TOPDIR}/SOURCES
 
 # Build, contains one ELF which should have a buildid.
 rundebug rpmbuild \
@@ -1303,9 +1231,9 @@ rundebug rpmbuild \
   --quiet -ba "${abs_srcdir}"/data/SPECS/hello-config-buildid.spec
 
 # Should contain one config file.
-run rpm -c -qp ${abs_builddir}/testing/build/RPMS/*/test-1.0-1*rpm
+runroot rpm -c -qp /build/RPMS/*/test-1.0-1*rpm
 # Should not contain config files.
-run rpm -c -qp ${abs_builddir}/testing/build/RPMS/*/test-debuginfo-1.0-1*rpm
+runroot rpm -c -qp /build/RPMS/*/test-debuginfo-1.0-1*rpm
 ],
 [0],
 [/etc/config.file

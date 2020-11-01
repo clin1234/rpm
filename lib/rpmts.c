@@ -6,6 +6,7 @@
 
 #include <inttypes.h>
 #include <libgen.h>
+#include <fcntl.h>
 
 #include <rpm/rpmtypes.h>
 #include <rpm/rpmlib.h>			/* rpmReadPackage etc */
@@ -135,17 +136,21 @@ int rpmtsRebuildDB(rpmts ts)
 {
     int rc = -1;
     rpmtxn txn = NULL;
+    int rebuildflags = 0;
 
     /* Cannot do this on a populated transaction set */
     if (rpmtsNElements(ts) > 0)
 	return -1;
 
+    if (rpmExpandNumeric("%{?_rebuilddb_salvage}"))
+	rebuildflags |= RPMDB_REBUILD_FLAG_SALVAGE;
+
     txn = rpmtxnBegin(ts, RPMTXN_WRITE);
     if (txn) {
 	if (!(ts->vsflags & RPMVSF_NOHDRCHK))
-	    rc = rpmdbRebuild(ts->rootDir, ts, headerCheck);
+	    rc = rpmdbRebuild(ts->rootDir, ts, headerCheck, rebuildflags);
 	else
-	    rc = rpmdbRebuild(ts->rootDir, NULL, NULL);
+	    rc = rpmdbRebuild(ts->rootDir, NULL, NULL, rebuildflags);
 	rpmtxnEnd(txn);
     }
     return rc;
@@ -702,6 +707,7 @@ void rpmtsEmpty(rpmts ts)
     rpmtsClean(ts);
 
     for (int oc = 0; oc < tsmem->orderCount; oc++) {
+	rpmtsNotifyChange(ts, RPMTS_EVENT_DEL, tsmem->order[oc], NULL);
 	tsmem->order[oc] = rpmteFree(tsmem->order[oc]);
     }
 
@@ -754,6 +760,8 @@ rpmts rpmtsFree(rpmts ts)
     if (ts->nrefs > 1)
 	return rpmtsUnlink(ts);
 
+    /* Don't issue element change callbacks when freeing */
+    rpmtsSetChangeCallback(ts, NULL, NULL);
     rpmtsEmpty(ts);
 
     (void) rpmtsCloseDB(ts);
@@ -920,19 +928,34 @@ void * rpmtsNotify(rpmts ts, rpmte te,
 {
     void * ptr = NULL;
     if (ts && ts->notify) {
+	void *arg = NULL;
 	Header h = NULL;
 	fnpyKey cbkey = NULL;
 	if (te) {
-	    h = rpmteHeader(te);
+	    if (ts->notifyStyle == 0) {
+		h = rpmteHeader(te);
+		arg = h;
+	    } else {
+		arg = te;
+	    }
 	    cbkey = rpmteKey(te);
 	}
-	ptr = ts->notify(h, what, amount, total, cbkey, ts->notifyData);
+	ptr = ts->notify(arg, what, amount, total, cbkey, ts->notifyData);
 
 	if (h) {
 	    headerFree(h); /* undo rpmteHeader() ref */
 	}
     }
     return ptr;
+}
+
+int rpmtsNotifyChange(rpmts ts, int event, rpmte te, rpmte other)
+{
+    int rc = 0;
+    if (ts && ts->change) {
+	rc = ts->change(event, te, other, ts->changeData);
+    }
+    return rc;
 }
 
 int rpmtsNElements(rpmts ts)
@@ -1033,6 +1056,30 @@ int rpmtsSetNotifyCallback(rpmts ts,
     if (ts != NULL) {
 	ts->notify = notify;
 	ts->notifyData = notifyData;
+    }
+    return 0;
+}
+
+int rpmtsSetNotifyStyle(rpmts ts, int style)
+{
+    if (ts != NULL)
+	ts->notifyStyle = style;
+    return 0;
+}
+
+int rpmtsGetNotifyStyle(rpmts ts)
+{
+    int style = 0;
+    if (ts != NULL)
+	style = ts->notifyStyle;
+    return style;
+}
+
+int rpmtsSetChangeCallback(rpmts ts, rpmtsChangeFunction change, void *data)
+{
+    if (ts != NULL) {
+	ts->change = change;
+	ts->changeData = data;
     }
     return 0;
 }
@@ -1143,7 +1190,7 @@ rpmts rpmtsCreate(void)
 
     ts->trigs2run = rpmtriggersCreate(10);
 
-    ts->min_writes = rpmExpandNumeric("%{_minimize_writes}");
+    ts->min_writes = (rpmExpandNumeric("%{?_minimize_writes}") > 0);
 
     return rpmtsLink(ts);
 }

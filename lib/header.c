@@ -68,12 +68,6 @@ static const int typeSizes[16] =  {
     0
 };
 
-enum headerSorted_e {
-    HEADERSORT_NONE	= 0,	/* Not sorted */
-    HEADERSORT_OFFSET	= 1,	/* Sorted by offset (on-disk format) */
-    HEADERSORT_INDEX	= 2,	/* Sorted by index  */
-};
-
 enum headerFlags_e {
     HEADERFLAG_ALLOCATED = (1 << 1), /*!< Is 1st header region allocated? */
     HEADERFLAG_LEGACY    = (1 << 2), /*!< Header came from legacy source? */
@@ -250,11 +244,8 @@ static Header headerCreate(void *blob, int32_t indexLen)
 	h->indexUsed = 0;
     }
     h->instance = 0;
-    h->sorted = HEADERSORT_NONE;
-
-    h->index = (h->indexAlloced
-	? xcalloc(h->indexAlloced, sizeof(*h->index))
-	: NULL);
+    h->sorted = 0;
+    h->index = xcalloc(h->indexAlloced, sizeof(*h->index));
 
     h->nrefs = 0;
     return headerLink(h);
@@ -321,9 +312,9 @@ static int indexCmp(const void * avp, const void * bvp)
 
 static void headerSort(Header h)
 {
-    if (h->sorted != HEADERSORT_INDEX) {
+    if (!h->sorted) {
 	qsort(h->index, h->indexUsed, sizeof(*h->index), indexCmp);
-	h->sorted = HEADERSORT_INDEX;
+	h->sorted = 1;
     }
 }
 
@@ -340,14 +331,6 @@ static int offsetCmp(const void * avp, const void * bvp)
 	    rc = (ap->info.tag - bp->info.tag);
     }
     return rc;
-}
-
-static void headerUnsort(Header h)
-{
-    if (h->sorted != HEADERSORT_OFFSET) {
-	qsort(h->index, h->indexUsed, sizeof(*h->index), offsetCmp);
-	h->sorted = HEADERSORT_OFFSET;
-    }
 }
 
 static inline unsigned int alignDiff(rpm_tagtype_t type, unsigned int alignsize)
@@ -577,7 +560,8 @@ static int regionSwab(indexEntry entry, int il, int dl,
     return dl;
 }
 
-void * headerExport(Header h, unsigned int *bsize)
+static void * doExport(const struct indexEntry_s *hindex, int indexUsed,
+			headerFlags flags, unsigned int *bsize)
 {
     int32_t * ei = NULL;
     entryInfo pe;
@@ -589,15 +573,15 @@ void * headerExport(Header h, unsigned int *bsize)
     indexEntry entry; 
     int i;
     int drlen, ndribbles;
-
-    if (h == NULL) return NULL;
+    size_t ilen = indexUsed * sizeof(struct indexEntry_s);
+    indexEntry index = memcpy(xmalloc(ilen), hindex, ilen);
 
     /* Sort entries by (offset,tag). */
-    headerUnsort(h);
+    qsort(index, indexUsed, sizeof(*index), offsetCmp);
 
     /* Compute (il,dl) for all tags, including those deleted in region. */
     drlen = ndribbles = 0;
-    for (i = 0, entry = h->index; i < h->indexUsed; i++, entry++) {
+    for (i = 0, entry = index; i < indexUsed; i++, entry++) {
 	if (ENTRY_IS_REGION(entry)) {
 	    int32_t rdl = -entry->info.offset;	/* negative offset */
 	    int32_t ril = rdl/sizeof(*pe);
@@ -606,11 +590,11 @@ void * headerExport(Header h, unsigned int *bsize)
 	    il += ril;
 	    dl += entry->rdlen + entry->info.count;
 	    /* Reserve space for legacy region tag */
-	    if (i == 0 && (h->flags & HEADERFLAG_LEGACY))
+	    if (i == 0 && (flags & HEADERFLAG_LEGACY))
 		il += 1;
 
 	    /* Skip rest of entries in region, but account for dribbles. */
-	    for (; i < h->indexUsed && entry->info.offset <= rid+1; i++, entry++) {
+	    for (; i < indexUsed && entry->info.offset <= rid+1; i++, entry++) {
 		if (entry->info.offset <= rid)
 		    continue;
 
@@ -655,7 +639,7 @@ void * headerExport(Header h, unsigned int *bsize)
     pe = (entryInfo) &ei[2];
     dataStart = te = (char *) (pe + il);
 
-    for (i = 0, entry = h->index; i < h->indexUsed; i++, entry++) {
+    for (i = 0, entry = index; i < indexUsed; i++, entry++) {
 	const char * src;
 	unsigned char *t;
 	int count;
@@ -679,7 +663,7 @@ void * headerExport(Header h, unsigned int *bsize)
 	    rdlen = entry->rdlen;
 
 	    /* Legacy headers don't have regions originally, create one */
-	    if (i == 0 && (h->flags & HEADERFLAG_LEGACY)) {
+	    if (i == 0 && (flags & HEADERFLAG_LEGACY)) {
 		int32_t stei[4];
 
 		memcpy(pe+1, src, rdl);
@@ -718,7 +702,7 @@ void * headerExport(Header h, unsigned int *bsize)
 	    }
 
 	    /* Skip rest of entries in region. */
-	    while (i < h->indexUsed && entry->info.offset <= rid+1) {
+	    while (i < indexUsed && entry->info.offset <= rid+1) {
 		i++;
 		entry++;
 	    }
@@ -790,13 +774,24 @@ void * headerExport(Header h, unsigned int *bsize)
     if (bsize)
 	*bsize = len;
 
-    headerSort(h);
-
+    free(index);
     return (void *) ei;
 
 errxit:
     free(ei);
+    free(index);
     return NULL;
+}
+
+void * headerExport(Header h, unsigned int *bsize)
+{
+    void *blob = NULL;
+
+    if (h) {
+	blob = doExport(h->index, h->indexUsed, h->flags, bsize);
+    }
+
+    return blob;
 }
 
 void * headerUnload(Header h)
@@ -818,8 +813,7 @@ indexEntry findEntry(Header h, rpmTagVal tag, rpm_tagtype_t type)
     struct indexEntry_s key;
 
     if (h == NULL) return NULL;
-    if (h->sorted != HEADERSORT_INDEX)
-	headerSort(h);
+    headerSort(h);
 
     key.info.tag = tag;
 
@@ -960,7 +954,7 @@ rpmRC hdrblobImport(hdrblob blob, int fast, Header *hdrp, char **emsg)
     }
 
     /* Force sorting, dribble lookups can cause early sort on partial header */
-    h->sorted = HEADERSORT_NONE;
+    h->sorted = 0;
     headerSort(h);
     h->flags |= HEADERFLAG_ALLOCATED;
     *hdrp = h;
@@ -1248,7 +1242,7 @@ static int headerMatchLocale(const char *td, const char *l, const char *le)
  * Return i18n string from header that matches locale.
  * @param h		header
  * @param entry		i18n string data
- * @retval td		tag data container
+ * @param[out] td		tag data container
  * @param flags		flags to control allocation
  * @return		1 always
  */
@@ -1316,7 +1310,7 @@ exit:
 /**
  * Retrieve tag data from header.
  * @param h		header
- * @retval td		tag data container
+ * @param[out] td		tag data container
  * @param flags		flags to control retrieval
  * @return		1 on success, 0 on not found
  */
@@ -1397,7 +1391,7 @@ static void copyData(rpm_tagtype_t type, rpm_data_t dstPtr,
  * @param type		entry data type
  * @param p		entry data
  * @param c		entry item count
- * @retval lengthPtr	no. bytes in returned data
+ * @param[out] lengthPtr	no. bytes in returned data
  * @return 		(malloc'ed) copy of entry data, NULL on error
  */
 static void *
@@ -1452,7 +1446,7 @@ static int intAddEntry(Header h, rpmtd td)
     entry->length = length;
 
     if (h->indexUsed > 0 && td->tag < h->index[h->indexUsed-1].info.tag)
-	h->sorted = HEADERSORT_NONE;
+	h->sorted = 0;
     h->indexUsed++;
 
     return 1;
@@ -1909,7 +1903,7 @@ rpmRC hdrblobRead(FD_t fd, int magic, int exact_size, rpmTagVal regionTag, hdrbl
 
     if (regionTag == RPMTAG_HEADERSIGNATURES) {
 	il_max = 32;
-	dl_max = 64 * 1024;
+	dl_max = 64 * 1024 * 1024;
     }
 
     memset(block, 0, sizeof(block));
@@ -2018,7 +2012,7 @@ rpmRC hdrblobGet(hdrblob blob, uint32_t tag, rpmtd td)
     memset(&einfo, 0, sizeof(einfo));
     rpmtdReset(td);
 
-    for (int i = 1; i < blob->il; i++, pe++) {
+    for (int i = 0; i < blob->il; i++, pe++) {
 	if (pe->tag != ntag)
 	    continue;
 	ei2h(pe, &einfo);

@@ -8,7 +8,10 @@
 #include <errno.h>
 #include <sys/wait.h>
 #include <popt.h>
-#include <libgen.h>
+#include <fcntl.h>
+#ifdef WITH_FSVERITY
+#include <libfsverity.h>
+#endif
 
 #include <rpm/rpmlib.h>			/* RPMSIGTAG & related */
 #include <rpm/rpmmacro.h>
@@ -23,6 +26,7 @@
 #include "lib/signature.h"
 #include "lib/rpmvs.h"
 #include "sign/rpmsignfiles.h"
+#include "sign/rpmsignverity.h"
 
 #include "debug.h"
 
@@ -32,68 +36,6 @@ typedef struct sigTarget_s {
     off_t start;
     rpm_loff_t size;
 } *sigTarget;
-
-/*
- * There is no function for creating unique temporary fifos so create
- * unique temporary directory and then create fifo in it.
- */
-static char *mkTempFifo(void)
-{
-    char *tmppath = NULL, *tmpdir = NULL, *fifofn = NULL;
-    mode_t mode;
-
-    tmppath = rpmExpand("%{_tmppath}", NULL);
-    if (rpmioMkpath(tmppath, 0755, (uid_t) -1, (gid_t) -1))
-	goto exit;
-
-
-    tmpdir = rpmGetPath(tmppath, "/rpm-tmp.XXXXXX", NULL);
-    mode = umask(0077);
-    tmpdir = mkdtemp(tmpdir);
-    umask(mode);
-    if (tmpdir == NULL) {
-	rpmlog(RPMLOG_ERR, _("error creating temp directory %s: %m\n"),
-	    tmpdir);
-	tmpdir = _free(tmpdir);
-	goto exit;
-    }
-
-    fifofn = rpmGetPath(tmpdir, "/fifo", NULL);
-    if (mkfifo(fifofn, 0600) == -1) {
-	rpmlog(RPMLOG_ERR, _("error creating fifo %s: %m\n"), fifofn);
-	fifofn = _free(fifofn);
-    }
-
-exit:
-    if (fifofn == NULL && tmpdir != NULL)
-	unlink(tmpdir);
-
-    free(tmppath);
-    free(tmpdir);
-
-    return fifofn;
-}
-
-/* Delete fifo and then temporary directory in which it was located */
-static int rpmRmTempFifo(const char *fn)
-{
-    int rc = 0;
-    char *dfn = NULL, *dir = NULL;
-
-    if ((rc = unlink(fn)) != 0) {
-	rpmlog(RPMLOG_ERR, _("error delete fifo %s: %m\n"), fn);
-	return rc;
-    }
-
-    dfn = xstrdup(fn);
-    dir = dirname(dfn);
-
-    if ((rc = rmdir(dir)) != 0)
-	rpmlog(RPMLOG_ERR, _("error delete directory %s: %m\n"), dir);
-    free(dfn);
-
-    return rc;
-}
 
 static int closeFile(FD_t *fdp)
 {
@@ -241,26 +183,37 @@ exit:
 static int runGPG(sigTarget sigt, const char *sigfile)
 {
     int pid = 0, status;
-    FD_t fnamedPipe = NULL;
-    char *namedPipeName = NULL;
+    int pipefd[2];
+    FILE *fpipe = NULL;
     unsigned char buf[BUFSIZ];
     ssize_t count;
     ssize_t wantCount;
     rpm_loff_t size;
     int rc = 1; /* assume failure */
 
-    namedPipeName = mkTempFifo();
+    if (pipe(pipefd) < 0) {
+        rpmlog(RPMLOG_ERR, _("Could not create pipe for signing: %m\n"));
+        goto exit;
+    }
 
-    rpmPushMacro(NULL, "__plaintext_filename", NULL, namedPipeName, -1);
+    rpmPushMacro(NULL, "__plaintext_filename", NULL, "-", -1);
     rpmPushMacro(NULL, "__signature_filename", NULL, sigfile, -1);
 
     if (!(pid = fork())) {
 	char *const *av;
 	char *cmd = NULL;
-	const char *gpg_path = rpmExpand("%{?_gpg_path}", NULL);
+	const char *tty = ttyname(STDIN_FILENO);
+	const char *gpg_path = NULL;
 
+	if (!getenv("GPG_TTY") && (!tty || setenv("GPG_TTY", tty, 0)))
+	    rpmlog(RPMLOG_WARNING, _("Could not set GPG_TTY to stdin: %m\n"));
+
+	gpg_path = rpmExpand("%{?_gpg_path}", NULL);
 	if (gpg_path && *gpg_path != '\0')
 	    (void) setenv("GNUPGHOME", gpg_path, 1);
+
+	dup2(pipefd[0], STDIN_FILENO);
+	close(pipefd[1]);
 
 	unsetenv("MALLOC_CHECK_");
 	cmd = rpmExpand("%{?__gpg_sign_cmd}", NULL);
@@ -276,9 +229,10 @@ static int runGPG(sigTarget sigt, const char *sigfile)
     rpmPopMacro(NULL, "__plaintext_filename");
     rpmPopMacro(NULL, "__signature_filename");
 
-    fnamedPipe = Fopen(namedPipeName, "w");
-    if (!fnamedPipe) {
-	rpmlog(RPMLOG_ERR, _("Fopen failed\n"));
+    close(pipefd[0]);
+    fpipe = fdopen(pipefd[1], "w");
+    if (!fpipe) {
+	rpmlog(RPMLOG_ERR, _("Could not open pipe for writing: %m\n"));
 	goto exit;
     }
 
@@ -291,8 +245,8 @@ static int runGPG(sigTarget sigt, const char *sigfile)
     size = sigt->size;
     wantCount = size < sizeof(buf) ? size : sizeof(buf);
     while ((count = Fread(buf, sizeof(buf[0]), wantCount, sigt->fd)) > 0) {
-	Fwrite(buf, sizeof(buf[0]), count, fnamedPipe);
-	if (Ferror(fnamedPipe)) {
+	fwrite(buf, sizeof(buf[0]), count, fpipe);
+	if (ferror(fpipe)) {
 	    rpmlog(RPMLOG_ERR, _("Could not write to pipe\n"));
 	    goto exit;
 	}
@@ -304,8 +258,13 @@ static int runGPG(sigTarget sigt, const char *sigfile)
 		sigt->fileName, Fstrerror(sigt->fd));
 	goto exit;
     }
-    Fclose(fnamedPipe);
-    fnamedPipe = NULL;
+
+exit:
+
+    if (fpipe)
+	fclose(fpipe);
+    if (pipefd[1])
+	close(pipefd[1]);
 
     (void) waitpid(pid, &status, 0);
     pid = 0;
@@ -314,20 +273,6 @@ static int runGPG(sigTarget sigt, const char *sigfile)
     } else {
 	rc = 0;
     }
-
-exit:
-
-    if (fnamedPipe)
-	Fclose(fnamedPipe);
-
-    if (pid)
-	waitpid(pid, &status, 0);
-
-    if (namedPipeName) {
-	rpmRmTempFifo(namedPipeName);
-	free(namedPipeName);
-    }
-
     return rc;
 }
 
@@ -395,6 +340,14 @@ static void deleteSigs(Header sigh)
     headerDel(sigh, RPMSIGTAG_PGP5);
 }
 
+static void deleteFileSigs(Header sigh)
+{
+    headerDel(sigh, RPMSIGTAG_FILESIGNATURELENGTH);
+    headerDel(sigh, RPMSIGTAG_FILESIGNATURES);
+    headerDel(sigh, RPMSIGTAG_VERITYSIGNATURES);
+    headerDel(sigh, RPMSIGTAG_VERITYSIGNATUREALGO);
+}
+
 static int haveSignature(rpmtd sigtd, Header h)
 {
     pgpDigParams sig1 = NULL;
@@ -437,14 +390,17 @@ static int replaceSignature(Header sigh, sigTarget sigt_v3, sigTarget sigt_v4)
 
     if (headerPut(sigh, sigtd, HEADERPUT_DEFAULT) == 0)
 	goto exit;
-    rpmtdFree(sigtd);
 
-    /* Assume the same signature test holds for v3 signature too */
-    if ((sigtd = makeGPGSignature(sigh, 0, sigt_v3)) == NULL)
-	goto exit;
+    if (sigt_v3) {
+	rpmtdFree(sigtd);
 
-    if (headerPut(sigh, sigtd, HEADERPUT_DEFAULT) == 0)
-	goto exit;
+	/* Assume the same signature test holds for v3 signature too */
+	if ((sigtd = makeGPGSignature(sigh, 0, sigt_v3)) == NULL)
+	    goto exit;
+
+	if (headerPut(sigh, sigtd, HEADERPUT_DEFAULT) == 0)
+	    goto exit;
+    }
 
     rc = 0;
 exit:
@@ -455,11 +411,19 @@ exit:
 static void unloadImmutableRegion(Header *hdrp, rpmTagVal tag)
 {
     struct rpmtd_s td;
+    Header oh = NULL;
 
     if (headerGet(*hdrp, tag, &td, HEADERGET_DEFAULT)) {
-	Header oh = headerCopyLoad(td.data);
-	Header nh = headerCopy(oh);
+	oh = headerCopyLoad(td.data);
 	rpmtdFreeData(&td);
+    } else {
+	/* XXX should we warn if the immutable region is corrupt/missing? */
+	oh = headerLink(*hdrp);
+    }
+
+    if (oh) {
+	/* Perform a copy to eliminate crud from buggy signing tools etc */
+	Header nh = headerCopy(oh);
 	headerFree(*hdrp);
 	*hdrp = headerLink(nh);
 	headerFree(nh);
@@ -486,6 +450,50 @@ static rpmRC includeFileSignatures(Header *sigp, Header *hdrp)
     return rc;
 #else
     rpmlog(RPMLOG_ERR, _("file signing support not built in\n"));
+    return RPMRC_FAIL;
+#endif
+}
+
+static rpmRC includeVeritySignatures(FD_t fd, Header *sigp, Header *hdrp)
+{
+#ifdef WITH_FSVERITY
+    rpmRC rc = RPMRC_OK;
+    char *key = rpmExpand("%{?_file_signing_key}", NULL);
+    char *keypass = rpmExpand("%{?_file_signing_key_password}", NULL);
+    char *cert = rpmExpand("%{?_file_signing_cert}", NULL);
+    char *algorithm = rpmExpand("%{?_verity_algorithm}", NULL);
+    uint16_t algo = 0;
+
+    if (rstreq(keypass, "")) {
+	free(keypass);
+	keypass = NULL;
+    }
+
+    if (algorithm && strlen(algorithm) > 0) {
+	    algo = libfsverity_find_hash_alg_by_name(algorithm);
+	    rpmlog(RPMLOG_DEBUG, _("Searching for algorithm %s got %i\n"),
+		   algorithm, algo);
+	    if (!algo) {
+		    rpmlog(RPMLOG_ERR, _("Unsupported fsverity algorithm %s\n"),
+			   algorithm);
+		    rc = RPMRC_FAIL;
+		    goto out;
+	    }
+    }
+    if (key && cert) {
+	    rc = rpmSignVerity(fd, *sigp, *hdrp, key, keypass, cert, algo);
+    } else {
+	rpmlog(RPMLOG_ERR, _("fsverity signatures requires a key and a cert\n"));
+	rc = RPMRC_FAIL;
+    }
+
+ out:
+    free(keypass);
+    free(key);
+    free(cert);
+    return rc;
+#else
+    rpmlog(RPMLOG_ERR, _("fsverity signing support not built in\n"));
     return RPMRC_FAIL;
 #endif
 }
@@ -519,10 +527,10 @@ static int checkPkg(FD_t fd, char **msg)
  * Create/modify elements in signature header.
  * @param rpm		path to package
  * @param deleting	adding or deleting signature?
- * @param signfiles	sign files if non-zero
+ * @param flags
  * @return		0 on success, -1 on error
  */
-static int rpmSign(const char *rpm, int deleting, int signfiles)
+static int rpmSign(const char *rpm, int deleting, int flags)
 {
     FD_t fd = NULL;
     FD_t ofd = NULL;
@@ -575,18 +583,32 @@ static int rpmSign(const char *rpm, int deleting, int signfiles)
 	goto exit;
     }
 
+    /* Always add V3 signatures if no payload digest present */
+    if (!(headerIsEntry(h, RPMTAG_PAYLOADDIGEST) ||
+	  headerIsEntry(h, RPMTAG_PAYLOADDIGESTALT))) {
+	flags |= RPMSIGN_FLAG_RPMV3;
+    }
+
     unloadImmutableRegion(&sigh, RPMTAG_HEADERSIGNATURES);
     origSigSize = headerSizeof(sigh, HEADER_MAGIC_YES);
 
-    if (signfiles) {
+    if (flags & RPMSIGN_FLAG_IMA) {
 	if (includeFileSignatures(&sigh, &h))
 	    goto exit;
     }
 
-    if (deleting) {	/* Nuke all the signature tags. */
+    if (flags & RPMSIGN_FLAG_FSVERITY) {
+	if (includeVeritySignatures(fd, &sigh, &h))
+	    goto exit;
+    }
+
+    if (deleting == 2) {	/* Nuke IMA + fsverity file signature tags. */
+	deleteFileSigs(sigh);
+    } else if (deleting) {	/* Nuke all the signature tags. */
 	deleteSigs(sigh);
     } else {
 	/* Signature target containing header + payload */
+	int v3 = (flags & RPMSIGN_FLAG_RPMV3);
 	sigt_v3.fd = fd;
 	sigt_v3.start = headerStart;
 	sigt_v3.fileName = rpm;
@@ -596,7 +618,7 @@ static int rpmSign(const char *rpm, int deleting, int signfiles)
 	sigt_v4 = sigt_v3;
 	sigt_v4.size = headerSizeof(h, HEADER_MAGIC_YES);
 
-	res = replaceSignature(sigh, &sigt_v3, &sigt_v4);
+	res = replaceSignature(sigh, v3 ? &sigt_v3 : NULL, &sigt_v4);
 	if (res != 0) {
 	    if (res == 1) {
 		rpmlog(RPMLOG_WARNING,
@@ -716,7 +738,7 @@ int rpmPkgSign(const char *path, const struct rpmSignArgs * args)
 	}
     }
 
-    rc = rpmSign(path, 0, args ? args->signfiles : 0);
+    rc = rpmSign(path, 0, args ? args->signflags : 0);
 
     if (args) {
 	if (args->hashalgo) {
@@ -733,4 +755,9 @@ int rpmPkgSign(const char *path, const struct rpmSignArgs * args)
 int rpmPkgDelSign(const char *path, const struct rpmSignArgs * args)
 {
     return rpmSign(path, 1, 0);
+}
+
+int rpmPkgDelFileSign(const char *path, const struct rpmSignArgs * args)
+{
+    return rpmSign(path, 2, 0);
 }

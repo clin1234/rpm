@@ -12,6 +12,7 @@
 #include <rpm/rpmmacro.h>	/* XXX rpmCleanPath */
 #include <rpm/rpmds.h>
 #include <errno.h>
+#include <fcntl.h>
 
 #include "lib/rpmfi_internal.h"
 #include "lib/rpmte_internal.h"	/* relocations */
@@ -19,6 +20,7 @@
 #include "lib/fsm.h"	/* rpmpsm stuff for now */
 #include "lib/rpmug.h"
 #include "rpmio/rpmio_internal.h"       /* fdInit/FiniDigest */
+#include "rpmio/rpmbase64.h"
 
 #include "debug.h"
 
@@ -115,8 +117,11 @@ struct rpmfiles_s {
 
     int digestalgo;		/*!< File digest algorithm */
     int signaturelength;	/*!< File signature length */
+    int veritysiglength;	/*!< Verity signature length */
+    uint16_t verityalgo;	/*!< Verity algorithm */
     unsigned char * digests;	/*!< File digests in binary. */
     unsigned char * signatures; /*!< File signatures in binary. */
+    unsigned char * veritysigs; /*!< Verity signatures in binary. */
 
     struct nlinkHash_s * nlinks;/*!< Files connected by hardlinks */
     rpm_off_t * replacedSizes;	/*!< (TR_ADDED) */
@@ -579,6 +584,22 @@ const unsigned char * rpmfilesFSignature(rpmfiles fi, int ix, size_t *len)
 	    *len = fi->signaturelength;
     }
     return signature;
+}
+
+const unsigned char * rpmfilesVSignature(rpmfiles fi, int ix, size_t *len,
+					 uint16_t *algo)
+{
+    const unsigned char *vsignature = NULL;
+
+    if (fi != NULL && ix >= 0 && ix < rpmfilesFC(fi)) {
+	if (fi->veritysigs != NULL)
+	    vsignature = fi->veritysigs + (fi->veritysiglength * ix);
+	if (len)
+	    *len = fi->veritysiglength;
+	if (algo)
+	    *algo = fi->verityalgo;
+    }
+    return vsignature;
 }
 
 const char * rpmfilesFLink(rpmfiles fi, int ix)
@@ -1256,6 +1277,7 @@ rpmfiles rpmfilesFree(rpmfiles fi)
 	fi->flangs = _free(fi->flangs);
 	fi->digests = _free(fi->digests);
 	fi->signatures = _free(fi->signatures);
+	fi->veritysigs = _free(fi->veritysigs);
 	fi->fcaps = _free(fi->fcaps);
 
 	fi->cdict = _free(fi->cdict);
@@ -1323,7 +1345,7 @@ static rpmsid * tag2pool(rpmstrPool pool, Header h, rpmTag tag, rpm_count_t size
     rpmsid *sids = NULL;
     struct rpmtd_s td;
     if (headerGet(h, tag, &td, HEADERGET_MINMEM)) {
-	if ((size >= 0) && (rpmtdCount(&td) == size)) { /* ensure right size */
+	if (rpmtdCount(&td) == size) { /* ensure right size */
 	    sids = rpmtdToPool(&td, pool);
 	}
 	rpmtdFreeData(&td);
@@ -1509,6 +1531,63 @@ static uint8_t *hex2bin(Header h, rpmTagVal tag, rpm_count_t num, size_t len)
     return bin;
 }
 
+/*
+ * Convert a tag of base64 strings to binary presentation.
+ * This handles variable length strings by finding the longest string
+ * before building the output array. Dummy strings in the tag should be
+ * added as '\0'
+ */
+static uint8_t *base2bin(Header h, rpmTagVal tag, rpm_count_t num, int *len)
+{
+    struct rpmtd_s td;
+    uint8_t *bin = NULL, *t = NULL;
+    size_t maxlen = 0;
+    int status, i= 0;
+    void **arr = xmalloc(num * sizeof(void *));
+    size_t *lengths = xcalloc(num, sizeof(size_t));
+    const char *s;
+
+    if (headerGet(h, tag, &td, HEADERGET_MINMEM) && rpmtdCount(&td) != num)
+	goto out;
+
+    while ((s = rpmtdNextString(&td))) {
+	/* Insert a dummy entry for empty strings */
+	if (*s == '\0') {
+	    arr[i++] = NULL;
+	    continue;
+	}
+	status = rpmBase64Decode(s, &arr[i], &lengths[i]);
+	if (lengths[i] > maxlen)
+	    maxlen = lengths[i];
+	if (status) {
+	    rpmlog(RPMLOG_DEBUG, _("%s: base64 decode failed, len %li\n"),
+		   __func__, lengths[i]);
+	    goto out;
+	}
+	i++;
+    }
+
+    if (maxlen) {
+	rpmlog(RPMLOG_DEBUG, _("%s: base64 decode success, len %li\n"),
+	       __func__, maxlen);
+
+	t = bin = xcalloc(num, maxlen);
+
+	for (i = 0; i < num; i++) {
+	    memcpy(t, arr[i], lengths[i]);
+	    free(arr[i]);
+	    t += maxlen;
+	}
+	*len = maxlen;
+    }
+ out:
+    free(arr);
+    free(lengths);
+    rpmtdFreeData(&td);
+
+    return bin;
+}
+
 static int rpmfilesPopulate(rpmfiles fi, Header h, rpmfiFlags flags)
 {
     headerGetFlags scareFlags = (flags & RPMFI_KEEPHEADER) ? 
@@ -1578,6 +1657,13 @@ static int rpmfilesPopulate(rpmfiles fi, Header h, rpmfiFlags flags)
 	fi->signaturelength = headerGetNumber(h, RPMTAG_FILESIGNATURELENGTH);
 	fi->signatures = hex2bin(h, RPMTAG_FILESIGNATURES,
 				 totalfc, fi->signaturelength);
+    }
+
+    fi->veritysigs = NULL;
+    if (!(flags & RPMFI_NOVERITYSIGNATURES)) {
+	fi->verityalgo = headerGetNumber(h, RPMTAG_VERITYSIGNATUREALGO);
+	fi->veritysigs = base2bin(h, RPMTAG_VERITYSIGNATURES,
+				  totalfc, &fi->veritysiglength);
     }
 
     /* XXX TR_REMOVED doesn;t need fmtimes, frdevs, finodes */
@@ -1868,6 +1954,11 @@ const unsigned char * rpmfiFDigest(rpmfi fi, int *algo, size_t *len)
 const unsigned char * rpmfiFSignature(rpmfi fi, size_t *len)
 {
     return rpmfilesFSignature(fi->files, fi ? fi->i : -1, len);
+}
+
+const unsigned char * rpmfiVSignature(rpmfi fi, size_t *len, uint16_t *algo)
+{
+    return rpmfilesVSignature(fi->files, fi ? fi->i : -1, len, algo);
 }
 
 uint32_t rpmfiFDepends(rpmfi fi, const uint32_t ** fddictp)
@@ -2260,7 +2351,7 @@ int rpmfiArchiveHasContent(rpmfi fi)
     return res;
 }
 
-size_t rpmfiArchiveRead(rpmfi fi, void * buf, size_t size)
+ssize_t rpmfiArchiveRead(rpmfi fi, void * buf, size_t size)
 {
     if (fi == NULL || fi->archive == NULL)
 	return -1;

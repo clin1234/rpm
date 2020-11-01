@@ -155,8 +155,33 @@ h['release'] = r
 h['epoch'] = e
 myprint(rpm.labelCompare((str(h['epoch']), h['version'], h['release']),
 			 (str(e), v, r)))
+myprint(rpm.labelCompare((None, '1.0', '1'),
+			 (None, '1.1', '2')))
+myprint(rpm.labelCompare((None, '1.0', '1'),
+			 (None, '1.1', '1')))
+myprint(rpm.labelCompare((None, '1.1', '1'),
+			 (None, '1.0', '1')))
+myprint(rpm.labelCompare((None, '1.1', '1'),
+			 (None, '1.0', '2')))
+myprint(rpm.labelCompare(('1', '1.0', '1'),
+			 ('0', '1.0', '1')))
+myprint(rpm.labelCompare(('0', '1.0', '1'),
+			 ('1', '1.0', '1')))
+myprint(rpm.labelCompare(('0', '1.0', '1'),
+			 (None, '1.0', '1')))
+myprint(rpm.labelCompare("1.0-1", "2.0-1"))
+myprint(rpm.labelCompare("2:1.0-1", "2.0-1"))
 ],
-[0]
+[0
+-1
+-1
+1
+1
+1
+-1
+0
+-1
+1]
 )
 
 RPMPY_TEST([vfyflags API],[
@@ -234,18 +259,40 @@ for e in ts:
 [foo-1.0-1.noarch]
 )
 
+RPMPY_TEST([add erasure to transaction],[
+ts = rpm.ts()
+for i in ['foo', 1234]:
+    myprint('addErase %s' % i)
+    try:
+        ts.addErase(i)
+    except rpm.error as err:
+        myprint(err)
+myprint('addErase mi')
+mi = ts.dbMatch('name', 'foo')
+try:
+    ts.addErase(mi)
+except rpm.error as err:
+    myprint(err)
+],
+[addErase foo
+package not installed
+addErase 1234
+package not installed
+addErase mi]
+)
+
 RPMPY_TEST([add bogus package to transaction 1],[
 ts = rpm.ts()
 h = rpm.hdr()
 h['name'] = "foo"
 try:
-    ts.addInstall(h, 'foo', 'u')
+    ts.addInstall(h, 'foo', 'i')
 except rpm.error as err:
     myprint(err)
 for e in ts:
     myprint(e.NEVRA())
 ],
-[adding package to transaction failed]
+[adding install to transaction failed]
 )
 
 RPMPY_TEST([add bogus package to transaction 2],[
@@ -266,13 +313,63 @@ except rpm.error as err:
 for e in ts:
     myprint(e.NEVRA())
 ],
-[adding package to transaction failed]
+[adding upgrade to transaction failed]
+)
+
+RPMPY_TEST([transaction element userdata],[
+mydata = { 'foo': 'bar', 'capstest': 'lock' }
+ts = rpm.ts()
+ts.addInstall('${RPMDATA}/RPMS/foo-1.0-1.noarch.rpm', 'u')
+ts.addInstall('${RPMDATA}/RPMS/capstest-1.0-1.noarch.rpm', 'u')
+for e in ts:
+    e.SetUserdata(mydata[e.N()])
+for e in ts:
+    myprint(e.Userdata())
+],
+[bar
+lock]
+)
+
+RPMPY_TEST([transaction callback 1],[
+def ocb(what, amount, total, key, data):
+    print(what, amount, total, type(key), data)
+    return -1
+
+def ncb(arg, what, amount, total, data):
+    print(type(arg), what, amount, total, data)
+    return -1
+
+cbd = "mine"
+ts = rpm.ts()
+ts.addInstall('${RPMDATA}/RPMS/foo-1.0-1.noarch.rpm', 'mykey', 'u')
+ts.setFlags(rpm.RPMTRANS_FLAG_TEST)
+print("- old -")
+ts.run(callback=ocb, data=cbd)
+ts.cbStyle = 1
+print("- new -")
+ts.run(callback=ncb, data=cbd)
+],
+[- old -
+2097152 0 1 <class 'NoneType'> mine
+1048576 0 1 <class 'str'> mine
+4 0 0 <class 'str'> mine
+4194304 1 1 <class 'NoneType'> mine
+32 6 1 <class 'NoneType'> mine
+16 0 1 <class 'NoneType'> mine
+64 6 1 <class 'NoneType'> mine
+- new -
+<class 'NoneType'> 2097152 0 1 mine
+<class 'rpm.te'> 1048576 0 1 mine
+<class 'rpm.te'> 4 0 0 mine
+<class 'NoneType'> 4194304 1 1 mine
+<class 'NoneType'> 32 6 1 mine
+<class 'NoneType'> 16 0 1 mine
+<class 'NoneType'> 64 6 1 mine]
 )
 
 AT_SETUP([database iterators])
 AT_KEYWORDS([python rpmdb])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
 runroot rpm -i \
   --justdb --nodeps --ignorearch --ignoreos \
@@ -364,6 +461,74 @@ for di in sorted(ts.dbIndex('provides')):
 hello
 hello(x86-32)
 hi
+],
+[])
+AT_CLEANUP
+
+AT_SETUP([database cookies])
+AT_KEYWORDS([python rpmdb])
+AT_CHECK([
+RPMDB_INIT
+],
+[0],
+[],
+[])
+
+RPMPY_CHECK([
+ts = rpm.ts()
+ts.openDB()
+c1 = ts.dbCookie()
+ts.closeDB()
+ts.openDB()
+c2 = ts.dbCookie()
+myprint(c1 == c2 != None)
+open("dbcookie", "w+").write(c1)
+],
+[True
+],
+[])
+
+AT_CHECK([
+runroot rpm -i \
+  --justdb --nodeps --ignorearch --ignoreos \
+  /data/RPMS/foo-1.0-1.noarch.rpm \
+  /data/RPMS/hello-2.0-1.i686.rpm \
+],
+[0],
+[],
+[])
+
+RPMPY_CHECK([
+ts = rpm.ts()
+ts.openDB()
+c1 = ts.dbCookie()
+c2 = open("dbcookie", "r").read()
+myprint(c1 != c2)
+open("dbcookie", "w+").write(c1)
+],
+[True
+],
+[])
+
+AT_CHECK([
+runroot rpm -i \
+  --justdb --nodeps --ignorearch --ignoreos \
+  --define "_transaction_color 3" \
+  --define "_prefer_color 2" \
+  /data/RPMS/hello-2.0-1.x86_64.rpm
+],
+[0],
+[],
+[])
+
+RPMPY_CHECK([
+ts = rpm.ts()
+ts.openDB()
+c1 = ts.dbCookie()
+c2 = open("dbcookie", "r").read()
+myprint(c1 != c2)
+],
+[True
 ],
 [])
 AT_CLEANUP
@@ -502,3 +667,44 @@ myprint(len1 == len2)
 ],
 [])
 
+RPMPY_TEST([version objects 1],[
+pv = None
+for vs in [ '1.0', '1.0', '4:1.0', '1.5-1', '3:2.0-1']:
+    v = rpm.ver(vs)
+    myprint('(%s, %s, %s)' % (v.e, v.v, v.r))
+    if pv:
+        myprint('%s < %s: %s' % (pv.evr, v.evr, pv < v))
+        myprint('%s > %s: %s' % (pv.evr, v.evr, pv > v))
+        myprint('%s == %s: %s' % (pv.evr, v.evr, pv == v))
+    pv = v
+],
+[(None, 1.0, None)
+(None, 1.0, None)
+1.0 < 1.0: False
+1.0 > 1.0: False
+1.0 == 1.0: True
+(4, 1.0, None)
+1.0 < 4:1.0: True
+1.0 > 4:1.0: False
+1.0 == 4:1.0: False
+(None, 1.5, 1)
+4:1.0 < 1.5-1: False
+4:1.0 > 1.5-1: True
+4:1.0 == 1.5-1: False
+(3, 2.0, 1)
+1.5-1 < 3:2.0-1: True
+1.5-1 > 3:2.0-1: False
+1.5-1 == 3:2.0-1: False
+],
+[])
+
+RPMPY_TEST([version objects 2],[
+for vt in [ (None, "1.0", None), (None, "1.0", "2"), ("1", "1.0", "3") ]:
+    v = rpm.ver(vt)
+    myprint(v)
+],
+[1.0
+1.0-2
+1:1.0-3
+],
+[])

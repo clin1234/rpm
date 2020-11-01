@@ -51,7 +51,8 @@ enum rpmtransFlags_e {
     /* bit 26 unused */
     RPMTRANS_FLAG_NOMD5		= (1 << 27),	/*!< from --nomd5 */
     RPMTRANS_FLAG_NOFILEDIGEST	= (1 << 27),	/*!< from --nofiledigest (alias to --nomd5) */
-    /* bits 28-29 unused */
+    /* bit 28 unused */
+    RPMTRANS_FLAG_NOARTIFACTS	= (1 << 29),	/*!< from --noartifacts */
     RPMTRANS_FLAG_NOCONFIGS	= (1 << 30),	/*!< from --noconfigs */
     RPMTRANS_FLAG_DEPLOOPS	= (1 << 31)	/*!< from --deploops */
 };
@@ -177,6 +178,26 @@ enum rpmtxnFlags_e {
     RPMTXN_WRITE	= (1 << 1),
 };
 typedef rpmFlags rpmtxnFlags;
+
+typedef enum rpmtsEvent_e {
+    RPMTS_EVENT_ADD		= 1,
+    RPMTS_EVENT_DEL		= 2,
+} rpmtsEvent;
+
+/** \ingroup rpmts
+ * Transaction change callback type.
+ *
+ * On explicit install/erase add events, "other" is NULL, on implicit
+ * add events (erasures due to obsolete/upgrade, replaced by newer)
+ * it points to the replacing package.
+ *
+ * @param event		Change event (see rpmtsEvent enum)
+ * @param te		Transaction element
+ * @param other		Related transaction element (or NULL)
+ * @param data		Application private data from rpmtsSetChangeCallback()
+ */
+typedef int (*rpmtsChangeFunction)
+		(int event, rpmte te, rpmte other, void *data);
 
 /** \ingroup rpmts
  * Perform dependency resolution on the transaction set.
@@ -583,6 +604,37 @@ rpmPlugins rpmtsPlugins(rpmts ts);
 int rpmtsSetNotifyCallback(rpmts ts,
 		rpmCallbackFunction notify,
 		rpmCallbackData notifyData);
+
+/** \ingroup rpmts
+ * Set transaction notify callback style.
+ *
+ * @param ts		transaction set
+ * @param style		0 (default) for header, 1 for transaction element
+ * 			as the first argument
+ * @return		0 on success
+ */
+int rpmtsSetNotifyStyle(rpmts ts, int style);
+
+/** \ingroup rpmts
+ * Get transaction notify callback style.
+ *
+ * @param ts		transaction set
+ * @return		current callback style (see above)
+ */
+int rpmtsGetNotifyStyle(rpmts ts);
+
+/** \ingroup rpmts
+ * Set transaction change callback function and argument.
+ *
+ * The change callback gets called when transaction elements are added,
+ * replaced or removed from a transaction set.
+ *
+ * @param ts		transaction set
+ * @param notify	element change callback
+ * @param data		element change callback private data
+ * @return		0 on success
+ */
+int rpmtsSetChangeCallback(rpmts ts, rpmtsChangeFunction notify, void *data);
 
 /** \ingroup rpmts
  * Create an empty transaction set.

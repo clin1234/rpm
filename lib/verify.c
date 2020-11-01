@@ -6,6 +6,7 @@
 #include "system.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #if WITH_CAP
 #include <sys/capability.h>
 #endif
@@ -246,7 +247,7 @@ static int rpmVerifyScript(rpmts ts, Header h)
 
     if (headerIsEntry(h, RPMTAG_VERIFYSCRIPT)) {
 	/* fake up a transaction element */
-	rpmte p = rpmteNew(ts, h, TR_RPMDB, NULL, NULL);
+	rpmte p = rpmteNew(ts, h, TR_RPMDB, NULL, NULL, 0);
 
 	if (p != NULL) {
 	    rpmteSetHeader(p, h);

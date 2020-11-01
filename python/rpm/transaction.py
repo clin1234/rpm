@@ -1,14 +1,6 @@
-from __future__ import with_statement
-
 import sys
 import rpm
 from rpm._rpm import ts as TransactionSetCore
-
-if sys.version_info[0] == 3:
-    _string_types = str,
-else:
-    _string_types = basestring,
-
 
 # TODO: migrate relevant documentation from C-side
 class TransactionSet(TransactionSetCore):
@@ -63,7 +55,7 @@ class TransactionSet(TransactionSetCore):
             return tuple(keys)
 
     def _f2hdr(self, item):
-        if isinstance(item, _string_types):
+        if isinstance(item, str):
             with open(item) as f:
                 header = self.hdrFromFdno(f)
         elif isinstance(item, rpm.hdr):
@@ -80,34 +72,41 @@ class TransactionSet(TransactionSetCore):
         upgrade = (how == "u")
 
         if not TransactionSetCore.addInstall(self, header, key, upgrade):
-            raise rpm.error("adding package to transaction failed")
+            if upgrade:
+                raise rpm.error("adding upgrade to transaction failed")
+            else:
+                raise rpm.error("adding install to transaction failed")
 
     def addReinstall(self, item, key):
         header = self._f2hdr(item)
 
         if not TransactionSetCore.addReinstall(self, header, key):
-            raise rpm.error("adding package to transaction failed")
+            raise rpm.error("adding reinstall to transaction failed")
 
     def addErase(self, item):
         hdrs = []
-        if isinstance(item, rpm.hdr):
-            hdrs = [item]
-        elif isinstance(item, rpm.mi):
+        # match iterators are passed on as-is
+        if isinstance(item, rpm.mi):
             hdrs = item
-        elif isinstance(item, int):
-            hdrs = self.dbMatch(rpm.RPMDBI_PACKAGES, item)
-        elif isinstance(item, _string_types):
-            hdrs = self.dbMatch(rpm.RPMDBI_LABEL, item)
+        elif isinstance(item, rpm.hdr):
+            hdrs.append(item)
+        elif isinstance(item, (int, str)):
+            if isinstance(item, int):
+                dbi = rpm.RPMDBI_PACKAGES
+            else:
+                dbi = rpm.RPMDBI_LABEL
+
+            for h in self.dbMatch(dbi, item):
+                hdrs.append(h)
+
+            if not hdrs:
+                raise rpm.error("package not installed")
         else:
             raise TypeError("invalid type %s" % type(item))
 
         for h in hdrs:
             if not TransactionSetCore.addErase(self, h):
-                raise rpm.error("package not installed")
-
-        # garbage collection should take care but just in case...
-        if isinstance(hdrs, rpm.mi):
-            del hdrs
+                raise rpm.error("adding erasure to transaction failed")
 
     def run(self, callback, data):
         rc = TransactionSetCore.run(self, callback, data, self._probFilter)

@@ -49,6 +49,17 @@ extern const char * macrofiles;
 #define addMacro(_mc, _n, _o, _b, _l) rpmPushMacro(_mc, _n, _o, _b, _l)
 #define delMacro(_mc, _n) rpmPopMacro(_mc, _n)
 
+/* rpm expression parser flags */
+#define RPMEXPR_EXPAND		(1 << 0)	/*!< expand primary terms */
+
+/* rpm macro expansion flags */
+#define RPMEXPAND_EXPAND_ARGS	(1 << 0)	/*!< expand arguments of parametric macros */
+
+typedef enum rpmMacroFlags_e {
+    RPMMACRO_DEFAULT	= 0,
+    RPMMACRO_LITERAL	= (1 << 0),		/*!< do not expand body of macro */
+} rpmMacroFlags;
+
 /** \ingroup rpmmacro
  * Print macros to file stream.
  * @param mc		macro context (NULL uses global context).
@@ -69,6 +80,19 @@ int	rpmExpandMacros	(rpmMacroContext mc, const char * sbuf,
 				char ** obuf, int flags);
 
 /** \ingroup rpmmacro
+ * Expand a specific macro into buffer.
+ * @param mc		macro context (NULL uses global context).
+ * @param n		macro name
+ * @param args		arguments for parametric macros
+ * @param obuf		macro expansion (malloc'ed)
+ * @param flags		flags (currently unused)
+ * @return		negative on failure
+ */
+int	rpmExpandThisMacro (rpmMacroContext mc, const char *n,
+				ARGV_const_t args,
+				char ** obuf, int flags);
+
+/** \ingroup rpmmacro
  * Push macro to context.
  * @param mc		macro context (NULL uses global context).
  * @param n		macro name
@@ -80,6 +104,21 @@ int	rpmExpandMacros	(rpmMacroContext mc, const char * sbuf,
 int	rpmPushMacro	(rpmMacroContext mc, const char * n,
 				const char * o,
 				const char * b, int level);
+
+/** \ingroup rpmmacro
+ * Push macro to context.
+ * @param mc		macro context (NULL uses global context).
+ * @param n		macro name
+ * @param o		macro parameters
+ * @param b		macro body
+ * @param level		macro recursion level (0 is entry API)
+ * @param flags		macro flags
+ * @return		0 on success
+ */
+int	rpmPushMacroFlags	(rpmMacroContext mc, const char * n,
+					const char * o,
+					const char * b, int level,
+					rpmMacroFlags flags);
 
 /** \ingroup rpmmacro
  * Pop macro from context.
@@ -98,6 +137,22 @@ int	rpmPopMacro	(rpmMacroContext mc, const char * n);
  */
 int	rpmDefineMacro	(rpmMacroContext mc, const char * macro,
 				int level);
+
+/*
+ * Test whether a macro is defined
+ * @param mc		macro context (NULL uses global context).
+ * @param n		macro name
+ * @return		1 if defined, 0 if not
+ */
+int rpmMacroIsDefined(rpmMacroContext mc, const char *n);
+
+/*
+ * Test whether a macro is parametric (ie takes arguments)
+ * @param mc		macro context (NULL uses global context).
+ * @param n		macro name
+ * @return		1 if parametric, 0 if not
+ */
+int rpmMacroIsParametric(rpmMacroContext mc, const char *n);
 
 /** \ingroup rpmmacro
  * Load macros from specific context into global context.
@@ -152,6 +207,36 @@ int	rpmExpandNumeric (const char * arg);
  * @return		rpm configuration directory name
  */
 const char *rpmConfigDir(void);
+
+/** \ingroup rpmmacro
+ * Evaluate boolean expression.
+ * @param expr		expression to parse
+ * @param flags		parser flags
+ * @return
+ */
+int rpmExprBoolFlags(const char * expr, int flags);
+
+/** \ingroup rpmmacro
+ * Evaluate string expression.
+ * @param expr		expression to parse
+ * @param flags		parser flags
+ * @return
+ */
+char * rpmExprStrFlags(const char * expr, int flags);
+
+/** \ingroup rpmmacro
+ * Evaluate boolean expression.
+ * @param expr		expression to parse
+ * @return
+ */
+int rpmExprBool(const char * expr);
+
+/** \ingroup rpmmacro
+ * Evaluate string expression.
+ * @param expr		expression to parse
+ * @return
+ */
+char * rpmExprStr(const char * expr);
 
 #ifdef __cplusplus
 }

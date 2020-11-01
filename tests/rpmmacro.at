@@ -6,10 +6,13 @@ AT_BANNER([RPM macros])
 AT_SETUP([simple rpm --eval])
 AT_KEYWORDS([macros])
 AT_CHECK([
-runroot rpm --define "this that" --eval '%{this}'
+runroot rpm --define "this that" --eval '%{this}' --eval '%not_defined' --eval '%{not_defined}' --eval '%{}'
 ],
 [0],
 [that
+%not_defined
+%{not_defined}
+%{}
 ])
 AT_CLEANUP
 
@@ -87,7 +90,8 @@ AT_CLEANUP
 AT_SETUP([parametrized macro 1])
 AT_KEYWORDS([macros])
 AT_CHECK([
-cat << EOF > ${abs_builddir}/testing/mtest
+RPMDB_INIT
+cat << EOF > ${RPMTEST}/mtest
 %bar() bar
 %foo()\\
 %bar\\
@@ -175,6 +179,9 @@ runroot rpm \
     --eval '%foo %{quote:   2 3  5} %{quote:%{nil}}' \
     --eval '%foo x%{quote:y}z 123' \
     --eval '%foo x%{quote:%{nil}}z' \
+    --eval '%foo 1 \
+bar' \
+    --eval '%foo 1 \' \
 ],
 [0],
 [1:"1"
@@ -186,10 +193,24 @@ runroot rpm \
 2:"   2 3  5" ""
 2:"xyz" "123"
 1:"xz"
+2:"1" "\"bar
+2:"1" "\"
 ])
 AT_CLEANUP
 
-AT_SETUP([uncompress macro])
+AT_SETUP([parametrized macro 6])
+AT_KEYWORDS([macros])
+AT_CHECK([
+runroot rpm \
+    --define '%foo(-) %{*}' \
+    --eval '%foo 5 a -z -b2'
+],
+[0],
+[5 a -z -b2
+])
+AT_CLEANUP
+
+AT_SETUP([uncompress macro 1])
 AT_KEYWORDS([macros])
 AT_CHECK([
 runroot rpm \
@@ -201,6 +222,19 @@ runroot rpm \
 ])
 AT_CLEANUP
 
+AT_SETUP([uncompress macro 2])
+AT_KEYWORDS([macros])
+AT_CHECK([
+RPMDB_INIT
+echo xxxxxxxxxxxxxxxxxxxxxxxxx > ${RPMTEST}/tmp/"some%%ath"
+runroot rpm \
+    --eval "%{uncompress:/tmp/some%%%%ath}"
+],
+[0],
+[/usr/bin/cat /tmp/some%%ath
+])
+
+AT_CLEANUP
 AT_SETUP([basename macro])
 AT_KEYWORDS([macros])
 AT_CHECK([
@@ -245,6 +279,174 @@ runroot rpm \
 ])
 AT_CLEANUP
 
+AT_SETUP([macrobody macro])
+AT_KEYWORDS([macros])
+AT_CHECK([
+runroot rpm \
+    --define "somedir %{_exec_prefix}/%{_lib}" \
+    --eval "%{macrobody:somedir}"
+runroot rpm \
+    --define "something somedir" \
+    --define "somedir %{_exec_prefix}/%{_lib}" \
+    --eval "%{macrobody:%{something}}"
+],
+[0],
+[%{_exec_prefix}/%{_lib}
+%{_exec_prefix}/%{_lib}
+])
+AT_CLEANUP
+
+AT_SETUP([builtin macro arguments])
+AT_KEYWORDS([macros])
+AT_CHECK([
+runroot rpm --eval "%{dirname}"
+runroot rpm --eval "%{dirname:}"
+runroot rpm --eval "%{dirname:dir}"
+runroot rpm --define '%xxx /hello/%%%%/world' --eval '%{dirname:%xxx}'
+runroot rpm --eval "%{uncompress}"
+runroot rpm --eval "%{uncompress:}"
+runroot rpm --eval "%{getncpus:}"
+runroot rpm --eval "%{getncpus:5}"
+runroot rpm --eval "%{define:}"
+runroot rpm --eval "%{dump:foo}"
+],
+[1],
+[
+dir
+/hello/%%
+
+],
+[error: %dirname: argument expected
+error: %uncompress: argument expected
+error: %getncpus: unexpected argument
+error: %getncpus: unexpected argument
+error: %define: unexpected argument
+error: %dump: unexpected argument
+])
+AT_CLEANUP
+
+AT_SETUP([expr macro 1])
+AT_KEYWORDS([macros])
+AT_CHECK([
+runroot rpm \
+    --define "aaa 5" \
+    --define "bbb 0" \
+    --eval '%{expr:4*1024}' \
+    --eval '%{expr:5 < 1}' \
+    --eval '%{expr:(4 + 5) * 2 == 18}' \
+    --eval '%{expr:%{aaa} || %{bbb}}' \
+    --eval '%{expr:%{aaa} && %{bbb}}' \
+    --eval '%{expr:! ""}' \
+    --eval '%{expr:! "foo"}' \
+    --eval '%{expr: 0 || 3}' \
+    --eval '%{expr: 2 || 3}' \
+    --eval '%{expr: "" || "foo"}' \
+    --eval '%{expr: "bar" || "foo"}' \
+    --eval '%{expr: 0 && 3}' \
+    --eval '%{expr: 2 && 3}' \
+    --eval '%{expr: "" && "foo"}' \
+    --eval '%{expr: "bar" && "foo"}'
+],
+[0],
+[4096
+0
+1
+5
+0
+1
+0
+3
+2
+foo
+bar
+0
+3
+
+foo
+],
+[])
+AT_CLEANUP
+
+AT_SETUP([expr macro 2])
+AT_KEYWORDS([macros])
+AT_CHECK([
+runroot rpm --eval '%{expr:"a"*1}'
+runroot rpm --eval '%{expr:(5+1)*4)}'
+runroot rpm --eval '%{expr:"a"=!"b"}'
+runroot rpm --eval '%{expr:4+}'
+runroot rpm --eval '%{expr:bare}'
+runroot rpm --eval '%{expr:1/0}'
+runroot rpm --eval '%{expr:0 < 1 ? 2 : 1*"a"}'
+runroot rpm --eval '%{expr:0 < 1 ? 1*"a" : 2}'
+runroot rpm --eval '%{expr:0 < 1 ? 2 : "a"}'
+runroot rpm --eval '%{expr:0 < 1 ? "a" : 2}'
+],
+[1],
+[],
+[error: types must match: "a"*1
+error: syntax error in expression: (5+1)*4)
+error:                                    ^
+error: syntax error while parsing ==: "a"=!"b"
+error:                                    ^
+error: unexpected end of expression: 4+
+error:                                ^
+error: bare words are no longer supported, please use "...": bare
+error:                                                       ^
+error: division by zero: 1/0
+error:                    ^
+error: types must match: 0 < 1 ? 2 : 1*"a"
+error: types must match: 0 < 1 ? 1*"a" : 2
+error: types must match: 0 < 1 ? 2 : "a"
+error: types must match: 0 < 1 ? "a" : 2
+])
+AT_CLEANUP
+
+AT_SETUP([ternary expressions])
+AT_KEYWORDS([macros])
+AT_CHECK([
+runroot rpm \
+    --eval '%{expr: 0 ? 2 : 3}' \
+    --eval '%{expr: 1 ? 2 : 3}' \
+    --eval '%{expr: 0 ? 0 ? 3 : 4 : 0 ? 6 : 7}' \
+    --eval '%{expr: 0 ? 0 ? 3 : 4 : 5 ? 6 : 7}' \
+    --eval '%{expr: 0 ? 2 ? 3 : 4 : 0 ? 6 : 7}' \
+    --eval '%{expr: 0 ? 2 ? 3 : 4 : 5 ? 6 : 7}' \
+    --eval '%{expr: 1 ? 0 ? 3 : 4 : 0 ? 6 : 7}' \
+    --eval '%{expr: 1 ? 0 ? 3 : 4 : 5 ? 6 : 7}' \
+    --eval '%{expr: 1 ? 2 ? 3 : 4 : 0 ? 6 : 7}' \
+    --eval '%{expr: 1 ? 2 ? 3 : 4 : 5 ? 6 : 7}' \
+],
+[0],
+[3
+2
+7
+6
+7
+6
+4
+4
+3
+3
+],
+[])
+AT_CLEANUP
+
+AT_SETUP([short circuiting])
+AT_KEYWORDS([macros])
+AT_CHECK([
+runroot rpm \
+    --eval '%{expr: 0 && 1 / 0}' \
+    --eval '%{expr: 1 || 1 / 0}' \
+    --eval '%{expr: 1 ? 2 : 1 / 0}' \
+],
+[0],
+[0
+1
+2
+],
+[])
+AT_CLEANUP
+
 AT_SETUP([shell expansion])
 AT_KEYWORDS([macros])
 AT_CHECK([
@@ -256,6 +458,74 @@ runroot rpm \
 ])
 AT_CLEANUP
 
+AT_SETUP([expression expansion 1])
+AT_KEYWORDS([macros])
+AT_CHECK([[
+runroot rpm \
+    --define "aaa 5" \
+    --define "bbb 0" \
+    --eval '%[4*1024]' \
+    --eval '%[5 < 1]' \
+    --eval '%[%aaa]' \
+    --eval '%[%{aaa}]' \
+    --eval '%["%{aaa}"]' \
+    --eval '%[%{?ccc}]' \
+    --eval '%[v"1:2.3-4"]' \
+]],
+[0],
+[4096
+0
+5
+5
+5
+0
+1:2.3-4
+],
+[])
+AT_CLEANUP
+
+AT_SETUP([expression expansion 2])
+AT_KEYWORDS([macros])
+AT_CHECK([[
+runroot rpm --define "aaa hello" --eval '%[%aaa]'
+runroot rpm --eval '%[%{foo]'
+runroot rpm --eval '%[v""]'
+runroot rpm --eval '%[v"1" + v"2"]'
+runroot rpm --eval '%[v"1" / v"2"]'
+]],
+[1],
+[],
+[error: macro expansion returned a bare word, please use "...": %aaa
+error:                                                         ^
+error: expanded string: hello
+error: Unterminated {: {foo 
+error: invalid version: v""
+error:                    ^
+error: + and - not supported for versions: v"1" + v"2"
+error:                                          ^
+error: * and / not supported for versions: v"1" / v"2"
+error:                                          ^
+])
+AT_CLEANUP
+
+AT_SETUP([expression version comparison])
+AT_KEYWORDS([macros])
+AT_CHECK([[
+runroot rpm \
+    --eval '%[v"1.0" == v"1.0"]' \
+    --eval '%[v"1.0~rc" < v"1.0"]' \
+    --eval '%[v"1.0~rc" > v"1.0"]' \
+    --eval '%[v"1.0-rc" > v"1.0"]' \
+]],
+[0],
+[1
+1
+0
+1
+],
+[])
+AT_CLEANUP
+
 AT_SETUP([simple lua --eval])
 AT_KEYWORDS([macros lua])
 AT_CHECK([
@@ -264,6 +534,20 @@ runroot rpm --eval '%{lua:print(5*5)}'
 ],
 [0],
 [25
+])
+AT_CLEANUP
+
+AT_SETUP([lua macro arguments])
+AT_KEYWORDS([macros lua])
+AT_SKIP_IF([$LUA_DISABLED])
+AT_CHECK([[
+runroot rpm \
+	--define "foo(a:) %{lua:print(opt.a, arg[1])}" \
+	--define "bar() %{lua:print(rpm.expand('%foo -a'..arg[2]..' '..arg[1]))}" \
+	--eval '%bar 5 3'
+]],
+[0],
+[3	5
 ])
 AT_CLEANUP
 
@@ -287,8 +571,24 @@ runroot rpm --eval '%{lua: print(rpm.vercmp("1.0", "2.0"))}'
 [0],
 [-1
 ])
-
 AT_CLEANUP
+
+AT_SETUP([lua rpm isdefined])
+AT_KEYWORDS([macros lua])
+AT_CHECK([
+AT_SKIP_IF([$LUA_DISABLED])
+runroot rpm \
+	--eval '%{lua: print(rpm.isdefined("with"))}' \
+	--eval '%{lua: print(rpm.isdefined("nil"))}' \
+	--eval '%{lua: print(rpm.isdefined("ponies"))}'
+],
+[0],
+[true	true
+true	false
+false	false
+])
+AT_CLEANUP
+
 AT_SETUP([lua posix extensions])
 AT_KEYWORDS([macros lua])
 AT_CHECK([
@@ -331,7 +631,8 @@ AT_SETUP([lua library path])
 AT_KEYWORDS([macros lua])
 AT_CHECK([
 AT_SKIP_IF([$LUA_DISABLED])
-f=$(rpm --eval "%{_rpmconfigdir}/lua/foo.lua")
+RPMDB_INIT
+f=$(run rpm --eval "%{_rpmconfigdir}/lua/foo.lua")
 echo "bar = 'graak'" > ${f}
 runroot rpm \
   --eval '%{lua:require "foo"; print(bar)}'
@@ -339,6 +640,41 @@ rm -f ${f}
 ],
 [0],
 [graak
+])
+AT_CLEANUP
+
+AT_SETUP([lua rpm version objects])
+AT_KEYWORDS([macros lua])
+AT_CHECK([
+AT_SKIP_IF([$LUA_DISABLED])
+runroot rpm \
+  --eval '%{lua: v1 = rpm.ver("1:4.16-5"); print(v1, v1.e, v1.v, v1.r)}' \
+  --eval '%{lua: v1 = rpm.ver("4.16-1"); print(v1, v1.e, v1.v, v1.r)}' \
+  --eval '%{lua: v1 = rpm.ver("4.16"); print(v1, v1.e, v1.v, v1.r)}' \
+  --eval '%{lua: v1 = rpm.ver("1:4.16-5"); v2 = rpm.ver("4.4-1"); print(v1 < v2, v1 == v2, v1 > v2, v1 == v1)}'
+],
+[0],
+[1:4.16-5	1	4.16	5
+4.16-1	nil	4.16	1
+4.16	nil	4.16	nil
+false	false	true	true
+])
+AT_CLEANUP
+
+AT_SETUP([lua rpm io stream])
+AT_KEYWORDS([macros lua])
+AT_CHECK([
+AT_SKIP_IF([$LUA_DISABLED])
+RPMDB_INIT
+runroot rpm \
+  --eval '%{lua: local f = rpm.open("zzz", "w+"); f:write("gggg"); print(f:seek("cur")); f:close()}' \
+  --eval '%{lua: local f = rpm.open("zzz"); print(f:read()); f:close()}' \
+  --eval '%{lua: local f = rpm.open("/data/SOURCES/hello-2.0.tar.gz"); f:reopen("r.gzip"); f:seek("cur", 6); print(f:read(3)); f:close()}'
+],
+[0],
+[4
+gggg
+2.0
 ])
 AT_CLEANUP
 
@@ -490,3 +826,62 @@ ccc0
 ccc1
 ])
 AT_CLEANUP
+
+AT_SETUP([macro file errors])
+AT_KEYWORDS([macros])
+AT_CHECK([
+cat << EOF > macros.bad
+%_i foo
+
+%multi \\
+line\\
+thing
+
+%foo bar
+%bad-name 123
+EOF
+
+run rpm --macros "macros.bad" --eval "%foo"
+],
+[0],
+[bar
+],
+[error: macros.bad: line 1: Macro %_i has illegal name (%define)
+warning: macros.bad: line 8: Macro %bad needs whitespace before body
+])
+AT_CLEANUP
+
+AT_SETUP([macro comments])
+AT_KEYWORDS([macros])
+AT_CHECK([
+runroot rpm \
+	--macros /data/macros.testfile \
+	--eval "%{comment1}" \
+	--eval "%{comment2}"
+],
+[0],
+[
+read
+me
+
+see
+this
+],
+[])
+AT_CLEANUP
+
+AT_SETUP([macro comments 2])
+AT_KEYWORDS([macros])
+AT_CHECK([
+runroot rpm \
+	--macros /data/macros.testfile \
+	--eval "%{comment3}"
+],
+[0],
+[
+read
+' change this meaning
+],
+[])
+AT_CLEANUP
+

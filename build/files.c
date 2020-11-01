@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <regex.h>
+#include <fcntl.h>
 #if WITH_CAP
 #include <sys/capability.h>
 #endif
@@ -865,7 +866,7 @@ static VFA_t const virtualAttrs[] = {
  * Parse simple attributes (e.g. %dir) from file manifest.
  * @param buf		current spec file line
  * @param cur		current file entry data
- * @retval *fileNames	file names
+ * @param[out] *fileNames	file names
  * @return		RPMRC_OK on success
  */
 static rpmRC parseForSimple(char * buf, FileEntry cur, ARGV_t * fileNames)
@@ -927,9 +928,14 @@ static int isDoc(ARGV_const_t docDirs, const char * fileName)
     return 0;
 }
 
+static int isLinkable(mode_t mode)
+{
+    return (S_ISREG(mode) || S_ISLNK(mode));
+}
+
 static int isHardLink(FileListRec flp, FileListRec tlp)
 {
-    return ((S_ISREG(flp->fl_mode) && S_ISREG(tlp->fl_mode)) &&
+    return ((isLinkable(flp->fl_mode) && isLinkable(tlp->fl_mode)) &&
 	    ((flp->fl_nlink > 1) && (flp->fl_nlink == tlp->fl_nlink)) &&
 	    (flp->fl_ino == tlp->fl_ino) && 
 	    (flp->fl_dev == tlp->fl_dev));
@@ -948,7 +954,7 @@ static int checkHardLinks(FileRecords files)
 
     for (i = 0;  i < files->used; i++) {
 	ilp = files->recs + i;
-	if (!(S_ISREG(ilp->fl_mode) && ilp->fl_nlink > 1))
+	if (!(isLinkable(ilp->fl_mode) && ilp->fl_nlink > 1))
 	    continue;
 
 	for (j = i + 1; j < files->used; j++) {
@@ -988,8 +994,7 @@ static void genCpioListAndHeader(FileList fl, Package pkg, int isSrc)
     uint32_t defaultalgo = PGPHASHALGO_MD5, digestalgo;
     rpm_loff_t totalFileSize = 0;
     Header h = pkg->header; /* just a shortcut */
-    int override_date = 0;
-    time_t source_date_epoch;
+    time_t source_date_epoch = 0;
     char *srcdate = getenv("SOURCE_DATE_EPOCH");
 
     /* Limit the maximum date to SOURCE_DATE_EPOCH if defined
@@ -1002,9 +1007,8 @@ static void genCpioListAndHeader(FileList fl, Package pkg, int isSrc)
 	source_date_epoch = strtol(srcdate, &endptr, 10);
 	if (srcdate == endptr || *endptr || errno != 0) {
 	    rpmlog(RPMLOG_ERR, _("unable to parse %s=%s\n"), "SOURCE_DATE_EPOCH", srcdate);
-	    exit(28);
+	    fl->processingFailed = 1;
 	}
-	override_date = 1;
     }
 
     /*
@@ -1139,13 +1143,13 @@ static void genCpioListAndHeader(FileList fl, Package pkg, int isSrc)
 	    headerPutUint32(h, RPMTAG_FILESIZES, &rsize32, 1);
 	}
 	/* Excludes and dupes have been filtered out by now. */
-	if (S_ISREG(flp->fl_mode)) {
+	if (isLinkable(flp->fl_mode)) {
 	    if (flp->fl_nlink == 1 || !seenHardLink(&fl->files, flp, &fileid)) {
 		totalFileSize += flp->fl_size;
 	    }
 	}
 	
-	if (override_date && flp->fl_mtime > source_date_epoch) {
+	if (source_date_epoch && flp->fl_mtime > source_date_epoch) {
 	    flp->fl_mtime = source_date_epoch;
 	}
 	/*
@@ -1320,6 +1324,22 @@ static struct stat * fakeStat(FileEntry cur, struct stat * statp)
     return statp;
 }
 
+static int validFilename(const char *fn)
+{
+    int rc = 1;
+    /* char is signed but we're dealing with unsigned values here! */
+    for (const unsigned char *s = (const unsigned char *)fn; *s; s++) {
+	/* Ban DEL and anything below space, UTF-8 is validated elsewhere */
+	if (*s == 0x7f || *s < 0x20) {
+	    rpmlog(RPMLOG_ERR,
+		_("Illegal character (0x%x) in filename: %s\n"), *s, fn);
+	    rc = 0;
+	    break;
+	}
+    }
+    return rc;
+}
+
 /**
  * Add a file to the package manifest.
  * @param fl		package file tree walk data
@@ -1352,6 +1372,9 @@ static rpmRC addFile(FileList fl, const char * diskPath,
 	rpmlog(RPMLOG_ERR, _("Path is outside buildroot: %s\n"), diskPath);
 	goto exit;
     }
+
+    if (!validFilename(diskPath))
+	goto exit;
     
     /* Path may have prepended buildRoot, so locate the original filename. */
     /*
@@ -1389,9 +1412,19 @@ static rpmRC addFile(FileList fl, const char * diskPath,
 	    statp = fakeStat(&(fl->cur), &statbuf);
 	} else {
 	    int lvl = RPMLOG_ERR;
+	    int ignore = 0;
 	    const char *msg = fl->cur.isDir ? _("Directory not found: %s\n") :
 					      _("File not found: %s\n");
-	    if (fl->cur.attrFlags & RPMFILE_EXCLUDE) {
+	    if (fl->cur.attrFlags & RPMFILE_EXCLUDE)
+		ignore = 1;
+	    if (fl->cur.attrFlags & RPMFILE_DOC) {
+		int strict_doc =
+		    rpmExpandNumeric("%{?_missing_doc_files_terminate_build}");
+		if (!strict_doc)
+		    ignore = 1;
+	    }
+
+	    if (ignore) {
 		lvl = RPMLOG_WARNING;
 		rc = RPMRC_OK;
 	    }
@@ -1556,6 +1589,8 @@ static rpmRC recurseDir(FileList fl, const char * diskPath)
 	case FTS_INIT:		/* initialized only */
 	case FTS_W:		/* whiteout object */
 	default:
+	    rpmlog(RPMLOG_ERR, _("Can't read content of file: %s\n"),
+		fts->fts_path);
 	    rc = RPMRC_FAIL;
 	    break;
 	}
@@ -1898,8 +1933,8 @@ static int generateBuildIDs(FileList fl, ARGV_t *files)
 			if (terminate)
 			    rc = 1;
 		    }
-		    elf_end (elf);
 		}
+		elf_end (elf);
 		close (fd);
 	    }
 	}
@@ -1981,7 +2016,7 @@ static int generateBuildIDs(FileList fl, ARGV_t *files)
 		    if (addsubdir)
 		       argvAddAttr(files, RPMFILE_DIR|RPMFILE_ARTIFACT, buildidsubdir);
 		    if (rc == 0) {
-			char *linkpattern, *targetpattern;
+			const char *linkpattern, *targetpattern;
 			char *linkpath, *targetpath;
 			int dups = 0;
 			if (isDbg) {
@@ -2182,13 +2217,13 @@ exit:
     return rc;
 }
 
-static rpmRC readFilesManifest(rpmSpec spec, Package pkg, const char *path)
+int readManifest(rpmSpec spec, const char *path, const char *descr, int flags,
+		ARGV_t *avp, StringBuf *sbp)
 {
     char *fn, buf[BUFSIZ];
     FILE *fd = NULL;
-    rpmRC rc = RPMRC_FAIL;
-    unsigned int nlines = 0;
-    char *expanded;
+    int lineno = 0;
+    int nlines = -1;
 
     if (*path == '/') {
 	fn = rpmGetPath(path, NULL);
@@ -2199,44 +2234,62 @@ static rpmRC readFilesManifest(rpmSpec spec, Package pkg, const char *path)
     fd = fopen(fn, "r");
 
     if (fd == NULL) {
-	rpmlog(RPMLOG_ERR, _("Could not open %%files file %s: %m\n"), fn);
+	rpmlog(RPMLOG_ERR, _("Could not open %s file %s: %m\n"), descr, fn);
 	goto exit;
     }
 
-    /* XXX unmask %license while parsing files manifest*/
-    rpmPushMacro(spec->macros, "license", NULL, "%%license", RMIL_SPEC);
+    rpmPushMacroFlags(spec->macros, "__file_name", NULL, fn, RMIL_SPEC, RPMMACRO_LITERAL);
 
+    nlines = 0;
     while (fgets(buf, sizeof(buf), fd)) {
-	if (handleComments(buf))
+	char *expanded = NULL;
+	lineno++;
+	if ((flags & STRIP_COMMENTS) && handleComments(buf))
 	    continue;
-	if (rpmExpandMacros(spec->macros, buf, &expanded, 0) < 0) {
-	    rpmlog(RPMLOG_ERR, _("line: %s\n"), buf);
+	if (specExpand(spec, lineno, buf, &expanded))
 	    goto exit;
-	}
-	argvAdd(&(pkg->fileList), expanded);
+	if (avp)
+	    argvAdd(avp, expanded);
+	if (sbp)
+	    appendStringBufAux(*sbp, expanded, (flags & STRIP_TRAILINGSPACE));
 	free(expanded);
 	nlines++;
     }
 
     if (nlines == 0) {
-	int terminate =
-		rpmExpandNumeric("%{?_empty_manifest_terminate_build}");
-	rpmlog(terminate ? RPMLOG_ERR : RPMLOG_WARNING,
-	       _("Empty %%files file %s\n"), fn);
-	if (terminate)
-		goto exit;
+	int emptyok = (flags & ALLOW_EMPTY);
+	rpmlog(emptyok ? RPMLOG_WARNING : RPMLOG_ERR,
+	       _("Empty %s file %s\n"), descr, fn);
+	if (!emptyok)
+	    nlines = -1;
     }
 
-    if (ferror(fd))
-	rpmlog(RPMLOG_ERR, _("Error reading %%files file %s: %m\n"), fn);
-    else
-	rc = RPMRC_OK;
-
 exit:
-    rpmPopMacro(NULL, "license");
-    if (fd) fclose(fd);
+    if (fd) {
+	fclose(fd);
+	rpmPopMacro(spec->macros, "__file_name");
+    }
     free(fn);
-    return rc;
+
+    return nlines;
+}
+
+static rpmRC readFilesManifest(rpmSpec spec, Package pkg, const char *path)
+{
+    int nlines = 0;
+    int flags = STRIP_COMMENTS | STRIP_TRAILINGSPACE;
+
+    if (!rpmExpandNumeric("%{?_empty_manifest_terminate_build}"))
+	flags |= ALLOW_EMPTY;
+
+    /* XXX unmask %license while parsing files manifest*/
+    rpmPushMacroFlags(spec->macros, "license", NULL, "%license", RMIL_SPEC, RPMMACRO_LITERAL);
+
+    nlines = readManifest(spec, path, "%files", flags, &(pkg->fileList), NULL);
+
+    rpmPopMacro(NULL, "license");
+
+    return (nlines >= 0) ? RPMRC_OK : RPMRC_FAIL;
 }
 
 static char * getSpecialDocDir(Header h, rpmFlags sdtype)
@@ -2342,11 +2395,10 @@ static void processSpecialDir(rpmSpec spec, Package pkg, FileList fl,
     }
 
     if (install) {
-	rpmRC rc = doScript(spec, RPMBUILD_STRINGBUF, sdname,
-			    getStringBuf(docScript), test);
-
-	if (rc && rpmExpandNumeric("%{?_missing_doc_files_terminate_build}"))
+	if (doScript(spec, RPMBUILD_STRINGBUF, sdname,
+			    getStringBuf(docScript), test, NULL)) {
 	    fl->processingFailed = 1;
+	}
     }
 
     basepath = rpmGenPath(spec->rootDir, "%{_builddir}", spec->buildSubdir);
@@ -2756,7 +2808,7 @@ static int checkFiles(const char *buildRoot, StringBuf fileList)
 
     rpmlog(RPMLOG_NOTICE, _("Checking for unpackaged file(s): %s\n"), s);
 
-    rc = rpmfcExec(av_ckfile, fileList, &sb_stdout, 0, buildRoot, NULL);
+    rc = rpmfcExec(av_ckfile, fileList, &sb_stdout, 0, buildRoot);
     if (rc < 0)
 	goto exit;
     
@@ -2786,6 +2838,7 @@ static rpmTag copyTagsFromMainDebug[] = {
     RPMTAG_OS,
     RPMTAG_PLATFORM,
     RPMTAG_OPTFLAGS,
+    0
 };
 
 /* this is a hack: patch the summary and the description to include
@@ -2818,11 +2871,14 @@ static void addPackageDeps(Package from, Package to, enum rpmTag_e tag);
  * main debuginfo package */
 static Package cloneDebuginfoPackage(rpmSpec spec, Package pkg, Package maindbg)
 {
-    const char *name = headerGetString(pkg->header, RPMTAG_NAME);
-    char *dbgname = NULL;
-    Package dbg;
+    Package dbg = NULL;
+    char *dbgname = headerFormat(pkg->header, "%{name}-debuginfo", NULL);
 
-    rasprintf(&dbgname, "%s-%s", name, "debuginfo");
+    if (lookupPackage(spec, dbgname, PART_NAME|PART_QUIET, &dbg) == RPMRC_OK) {
+	rpmlog(RPMLOG_WARNING, _("package %s already exists\n"), dbgname);
+	goto exit;
+    }
+
     dbg = newPackage(dbgname, spec->pool, &spec->packages);
     headerPutString(dbg->header, RPMTAG_NAME, dbgname);
     copyInheritedTags(dbg->header, pkg->header);
@@ -2839,6 +2895,7 @@ static Package cloneDebuginfoPackage(rpmSpec spec, Package pkg, Package maindbg)
     addPackageProvides(dbg);
     dbg->ds = rpmdsThis(dbg->header, RPMTAG_REQUIRENAME, RPMSENSE_EQUAL);
 
+exit:
     _free(dbgname);
     return dbg;
 }
@@ -2847,7 +2904,8 @@ static Package cloneDebuginfoPackage(rpmSpec spec, Package pkg, Package maindbg)
  * a (possibly new) debuginfo subpackage */
 static void filterDebuginfoPackage(rpmSpec spec, Package pkg,
 				   Package maindbg, Package dbgsrc,
-				   char *buildroot, char *uniquearch)
+				   const char *buildroot,
+				   const char *uniquearch)
 {
     rpmfi fi;
     ARGV_t files = NULL;

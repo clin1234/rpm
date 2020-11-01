@@ -51,8 +51,8 @@ const int rpmFLAGS = RPMSENSE_EQUAL;
 #undef HTDATATYPE
 
 #define HASHTYPE filedepHash
-#define HTKEYTYPE const char *
-#define HTDATATYPE const char *
+#define HTKEYTYPE rpmsid
+#define HTDATATYPE rpmsid
 #include "rpmhash.H"
 #include "rpmhash.C"
 #undef HASHTYPE
@@ -60,17 +60,11 @@ const int rpmFLAGS = RPMSENSE_EQUAL;
 #undef HTDATATYPE
 
 #define HASHTYPE depexistsHash
-#define HTKEYTYPE const char *
+#define HTKEYTYPE rpmsid
 #include "lib/rpmhash.H"
 #include "lib/rpmhash.C"
 #undef HASHTYPE
 #undef HTKEYTYPE
-
-enum addOp_e {
-    RPMTE_INSTALL	= 0,
-    RPMTE_UPGRADE	= 1,
-    RPMTE_REINSTALL	= 2,
-};
 
 /**
  * Check for supported payload format in header.
@@ -126,7 +120,7 @@ static int removePackage(rpmts ts, Header h, rpmte depends)
 	return 0;
     }
 
-    p = rpmteNew(ts, h, TR_REMOVED, NULL, NULL);
+    p = rpmteNew(ts, h, TR_REMOVED, NULL, NULL, 0);
     if (p == NULL)
 	return 1;
 
@@ -141,6 +135,7 @@ static int removePackage(rpmts ts, Header h, rpmte depends)
 
     tsmem->order[tsmem->orderCount] = p;
     tsmem->orderCount++;
+    rpmtsNotifyChange(ts, RPMTS_EVENT_ADD, p, depends);
 
     return 0;
 }
@@ -178,23 +173,22 @@ static int addSelfErasures(rpmts ts, rpm_color_t tscolor, int op,
     Header oh;
     rpmdbMatchIterator mi = rpmtsInitIterator(ts, RPMDBI_NAME, rpmteN(p), 0);
     int rc = 0;
-    int cmp;
 
     while ((oh = rpmdbNextIterator(mi)) != NULL) {
 	/* Ignore colored packages not in our rainbow. */
 	if (skipColor(tscolor, hcolor, headerGetNumber(oh, RPMTAG_HEADERCOLOR)))
 	    continue;
 
-	cmp = rpmVersionCompare(h, oh);
+	/* On reinstall, skip packages with differing NEVRA. */
+	if (op != RPMTE_UPGRADE) {
+	    char * ohNEVRA = headerGetAsString(oh, RPMTAG_NEVRA);
+	    if (!rstreq(rpmteNEVRA(p), ohNEVRA)) {
+		free(ohNEVRA);
+		continue;
+	    }
+	    free(ohNEVRA);
+	}
 
-	/* On upgrade, skip packages that contain identical NEVR. */
-	if ((op == RPMTE_UPGRADE) && (cmp == 0))
-	    continue;
-
-	/* On reinstall, skip packages with differing NEVR. */
-	if ((op == RPMTE_REINSTALL) && (cmp != 0))
-	    continue;
-	
 	if (removePackage(ts, oh, p)) {
 	    rc = 1;
 	    break;
@@ -222,16 +216,7 @@ static int addObsoleteErasures(rpmts ts, rpm_color_t tscolor, rpmte p)
 	mi = rpmtsPrunedIterator(ts, RPMDBI_NAME, Name, 1);
 
 	while ((oh = rpmdbNextIterator(mi)) != NULL) {
-	    const char *oarch = headerGetString(oh, RPMTAG_ARCH);
 	    int match;
-
-	    /* avoid self-obsoleting packages */
-	    if (rstreq(rpmteN(p), Name) && rstreq(rpmteA(p), oarch)) {
-		char * ohNEVRA = headerGetAsString(oh, RPMTAG_NEVRA);
-		rpmlog(RPMLOG_DEBUG, "  Not obsoleting: %s\n", ohNEVRA);
-		free(ohNEVRA);
-		continue;
-	    }
 
 	    /*
 	     * Rpm prior to 3.0.3 does not have versioned obsoletes.
@@ -239,8 +224,7 @@ static int addObsoleteErasures(rpmts ts, rpm_color_t tscolor, rpmte p)
 	     */
 	    match = (rpmdsEVR(obsoletes) == NULL);
 	    if (!match)
-		match = rpmdsMatches(tspool, oh, -1, obsoletes, 1,
-					 _rpmds_nopromote);
+		match = rpmdsMatches(tspool, oh, -1, obsoletes, 1);
 
 	    if (match) {
 		char * ohNEVRA = headerGetAsString(oh, RPMTAG_NEVRA);
@@ -400,10 +384,8 @@ rpmal rpmtsCreateAl(rpmts ts, rpmElementTypes types)
     if (ts) {
 	rpmte p;
 	rpmtsi pi;
-	rpmstrPool tspool = rpmtsPool(ts);
 
-	al = rpmalCreate(tspool, (rpmtsNElements(ts) / 4) + 1, rpmtsFlags(ts),
-				rpmtsColor(ts), rpmtsPrefColor(ts));
+	al = rpmalCreate(ts, (rpmtsNElements(ts) / 4) + 1);
 	pi = rpmtsiInit(ts);
 	while ((p = rpmtsiNext(pi, types)))
 	    rpmalAdd(al, p);
@@ -438,7 +420,7 @@ static int addPackage(rpmts ts, Header h,
 	    goto exit;
     }
 
-    p = rpmteNew(ts, h, TR_ADDED, key, relocs);
+    p = rpmteNew(ts, h, TR_ADDED, key, relocs, op);
     if (p == NULL) {
 	ec = 1;
 	goto exit;
@@ -449,6 +431,7 @@ static int addPackage(rpmts ts, Header h,
 	oc = findPos(ts, tscolor, p, (op == RPMTE_UPGRADE));
 	/* If we're replacing a previously added element, free the old one */
 	if (oc >= 0 && oc < tsmem->orderCount) {
+	    rpmtsNotifyChange(ts, RPMTS_EVENT_DEL, tsmem->order[oc], p);
 	    rpmalDel(tsmem->addedPackages, tsmem->order[oc]);
 	    tsmem->order[oc] = rpmteFree(tsmem->order[oc]);
 	/* If newer NEVR was already added, we're done */
@@ -469,10 +452,11 @@ static int addPackage(rpmts ts, Header h,
     if (oc == tsmem->orderCount) {
 	tsmem->orderCount++;
     }
+    rpmtsNotifyChange(ts, RPMTS_EVENT_ADD, p, NULL);
+
     
     if (tsmem->addedPackages == NULL) {
-	tsmem->addedPackages = rpmalCreate(rpmtsPool(ts), 5, rpmtsFlags(ts),
-					   tscolor, rpmtsPrefColor(ts));
+	tsmem->addedPackages = rpmalCreate(ts, 5);
     }
     rpmalAdd(tsmem->addedPackages, p);
 
@@ -577,8 +561,7 @@ static int rpmdbProvides(rpmts ts, depCache dcache, rpmds dep, dbiIndexSet *matc
 	while ((h = rpmdbNextIterator(mi)) != NULL) {
 	    /* Provide-indexes can't be used with nevr-only matching */
 	    int prix = (selfevr) ? -1 : rpmdbGetIteratorFileNum(mi);
-	    int match = rpmdsMatches(tspool, h, prix, dep, selfevr,
-					_rpmds_nopromote);
+	    int match = rpmdsMatches(tspool, h, prix, dep, selfevr);
 	    /* Ignore self-obsoletes and self-conflicts */
 	    if (match && (deptag == RPMTAG_OBSOLETENAME || deptag == RPMTAG_CONFLICTNAME)) {
 		unsigned int instance = headerGetInstance(h);
@@ -708,7 +691,7 @@ retry:
     }
 
     /* Dont look at pre-requisites of already installed packages */
-    if (!adding && isInstallPreReq(dsflags) && !isErasePreReq(dsflags))
+    if (!adding && isTransientReq(dsflags))
 	goto exit;
 
     /* Handle rich dependencies */
@@ -886,33 +869,34 @@ static void checkInstFileDeps(rpmts ts, depCache dcache, rpmte te,
 			      rpmTag depTag, rpmfi fi, int is_not,
 			      filedepHash cache, fingerPrintCache *fpcp)
 {
+    rpmstrPool pool = rpmtsPool(ts);
     fingerPrintCache fpc = *fpcp;
     fingerPrint * fp = NULL;
-    const char *basename = rpmfiBN(fi);
-    const char *dirname;
-    const char **dirnames = 0;
+    rpmsid basename = rpmfiBNId(fi);
+    rpmsid dirname;
+    rpmsid *dirnames = 0;
     int ndirnames = 0;
     int i;
 
     filedepHashGetEntry(cache, basename, &dirnames, &ndirnames, NULL);
     if (!ndirnames)
 	return;
-    if (!fpc)
-	*fpcp = fpc = fpCacheCreate(1001, NULL);
-    dirname = rpmfiDN(fi);
-    fpLookup(fpc, dirname, basename, &fp);
+    dirname = rpmfiDNId(fi);
     for (i = 0; i < ndirnames; i++) {
 	char *fpdep = 0;
 	const char *dep;
-	if (!strcmp(dirnames[i], dirname)) {
+	if (dirnames[i] == dirname) {
 	    dep = rpmfiFN(fi);
-	} else if (fpLookupEquals(fpc, fp, dirnames[i], basename)) {
-	    fpdep = rmalloc(strlen(dirnames[i]) + strlen(basename) + 1);
-	    strcpy(fpdep, dirnames[i]);
-	    strcat(fpdep, basename);
-	    dep = fpdep;
 	} else {
-	    continue;
+	    if (!fpc)
+		*fpcp = fpc = fpCacheCreate(1001, pool);
+	    if (!fp)
+		fpLookupId(fpc, dirname, basename, &fp);
+	    if (!fpLookupEqualsId(fpc, fp, dirnames[i], basename))
+		continue;
+	    rstrscat(&fpdep, rpmstrPoolStr(pool, dirnames[i]),
+                             rpmstrPoolStr(pool, basename), NULL);
+	    dep = fpdep;
 	}
 	checkInstDeps(ts, dcache, te, depTag, dep, NULL, is_not);
 	_free(fpdep);
@@ -920,41 +904,34 @@ static void checkInstFileDeps(rpmts ts, depCache dcache, rpmte te,
     _free(fp);
 }
 
-static void addFileDepToHash(filedepHash hash, char *key, size_t keylen)
+static void addFileDepToHash(rpmstrPool pool, filedepHash hash, char *key, size_t keylen)
 {
     int i;
-    char *basename, *dirname;
+    rpmsid basename, dirname;
     if (!keylen || key[0] != '/')
 	return;
     for (i = keylen - 1; key[i] != '/'; i--) 
 	;
-    dirname = rmalloc(i + 2);
-    memcpy(dirname, key, i + 1);
-    dirname[i + 1] = 0; 
-    basename = rmalloc(keylen - i);
-    memcpy(basename, key + i + 1, keylen - i - 1);
-    basename[keylen - i - 1] = 0; 
+    i++;	/* include '/' in dirname */
+    dirname = rpmstrPoolIdn(pool, key, i, 1);
+    basename = rpmstrPoolIdn(pool, key + i, keylen - i, 1);
     filedepHashAddEntry(hash, basename, dirname);
 }
 
-static void addDepToHash(depexistsHash hash, char *key, size_t keylen)
+static void addDepToHash(rpmstrPool pool, depexistsHash hash, char *key, size_t keylen)
 {
-    char *keystr;
-    if (!keylen)
-	return;
-    keystr = rmalloc(keylen + 1);
-    strncpy(keystr, key, keylen);
-    keystr[keylen] = 0;
-    depexistsHashAddEntry(hash, keystr);
+    if (keylen)
+	depexistsHashAddEntry(hash, rpmstrPoolIdn(pool, key, keylen, 1));
 }
 
 static void addIndexToDepHashes(rpmts ts, rpmDbiTag tag,
 				depexistsHash dephash, filedepHash filehash,
 				depexistsHash depnothash, filedepHash filenothash)
 {
+    rpmstrPool pool = rpmtsPool(ts);
     char *key;
     size_t keylen;
-    rpmdbIndexIterator ii = rpmdbIndexIteratorInit(rpmtsGetRdb(ts), tag);
+    rpmdbIndexIterator ii = rpmdbIndexKeyIteratorInit(rpmtsGetRdb(ts), tag);
 
     if (!ii)
 	return;
@@ -965,17 +942,27 @@ static void addIndexToDepHashes(rpmts ts, rpmDbiTag tag,
 	    key++;
 	    keylen--;
 	    if (*key == '/' && filenothash)
-		addFileDepToHash(filenothash, key, keylen);
+		addFileDepToHash(pool, filenothash, key, keylen);
 	    if (depnothash)
-		addDepToHash(depnothash, key, keylen);
+		addDepToHash(pool, depnothash, key, keylen);
 	} else {
 	    if (*key == '/' && filehash)
-		addFileDepToHash(filehash, key, keylen);
+		addFileDepToHash(pool, filehash, key, keylen);
 	    if (dephash)
-		addDepToHash(dephash, key, keylen);
+		addDepToHash(pool, dephash, key, keylen);
 	}
     }
     rpmdbIndexIteratorFree(ii);
+}
+
+static unsigned int sidHash(rpmsid sid)
+{
+    return sid;
+}
+
+static int sidCmp(rpmsid a, rpmsid b)
+{
+    return (a != b);
 }
 
 
@@ -1014,14 +1001,9 @@ int rpmtsCheck(rpmts ts)
 				     (depCacheFreeKey)rfree, NULL);
 
     /* build hashes of all confilict sdependencies */
-    confilehash = filedepHashCreate(257, rstrhash, strcmp,
-				    (filedepHashFreeKey)rfree,
-				    (filedepHashFreeData)rfree);
-    connothash = depexistsHashCreate(257, rstrhash, strcmp,
-				    (filedepHashFreeKey)rfree);
-    connotfilehash = filedepHashCreate(257, rstrhash, strcmp,
-				    (filedepHashFreeKey)rfree,
-				    (filedepHashFreeData)rfree);
+    confilehash = filedepHashCreate(257, sidHash, sidCmp, NULL, NULL);
+    connothash = depexistsHashCreate(257, sidHash, sidCmp, NULL);
+    connotfilehash = filedepHashCreate(257, sidHash, sidCmp, NULL, NULL);
     addIndexToDepHashes(ts, RPMTAG_CONFLICTNAME, NULL, confilehash, connothash, connotfilehash);
     if (!filedepHashNumKeys(confilehash))
 	confilehash = filedepHashFree(confilehash);
@@ -1031,14 +1013,9 @@ int rpmtsCheck(rpmts ts)
 	connotfilehash = filedepHashFree(connotfilehash);
 
     /* build hashes of all requires dependencies */
-    reqfilehash = filedepHashCreate(8191, rstrhash, strcmp,
-				    (filedepHashFreeKey)rfree,
-				    (filedepHashFreeData)rfree);
-    reqnothash = depexistsHashCreate(257, rstrhash, strcmp,
-				    (filedepHashFreeKey)rfree);
-    reqnotfilehash = filedepHashCreate(257, rstrhash, strcmp,
-				    (filedepHashFreeKey)rfree,
-				    (filedepHashFreeData)rfree);
+    reqfilehash = filedepHashCreate(8191, sidHash, sidCmp, NULL, NULL);
+    reqnothash = depexistsHashCreate(257, sidHash, sidCmp, NULL);
+    reqnotfilehash = filedepHashCreate(257, sidHash, sidCmp, NULL, NULL);
     addIndexToDepHashes(ts, RPMTAG_REQUIRENAME, NULL, reqfilehash, reqnothash, reqnotfilehash);
     if (!filedepHashNumKeys(reqfilehash))
 	reqfilehash = filedepHashFree(reqfilehash);
@@ -1065,16 +1042,16 @@ int rpmtsCheck(rpmts ts)
 	checkDS(ts, dcache, p, rpmteNEVRA(p), rpmteDS(p, RPMTAG_OBSOLETENAME),
 		tscolor);
 
+	/* Skip obsoletion and provides checks for source packages (ie build) */
+	if (rpmteIsSource(p))
+	    continue;
+
 	/* Check provides against conflicts in installed packages. */
 	while (rpmdsNext(provides) >= 0) {
 	    checkInstDeps(ts, dcache, p, RPMTAG_CONFLICTNAME, NULL, provides, 0);
-	    if (reqnothash && depexistsHashHasEntry(reqnothash, rpmdsN(provides)))
+	    if (reqnothash && depexistsHashHasEntry(reqnothash, rpmdsNId(provides)))
 		checkInstDeps(ts, dcache, p, RPMTAG_REQUIRENAME, NULL, provides, 1);
 	}
-
-	/* Skip obsoletion checks for source packages (ie build) */
-	if (rpmteIsSource(p))
-	    continue;
 
 	/* Check package name (not provides!) against installed obsoletes */
 	checkInstDeps(ts, dcache, p, RPMTAG_OBSOLETENAME, NULL, rpmteDS(p, RPMTAG_NAME), 0);
@@ -1108,13 +1085,13 @@ int rpmtsCheck(rpmts ts)
 	/* Check provides and filenames against installed dependencies. */
 	while (rpmdsNext(provides) >= 0) {
 	    checkInstDeps(ts, dcache, p, RPMTAG_REQUIRENAME, NULL, provides, 0);
-	    if (connothash && depexistsHashHasEntry(connothash, rpmdsN(provides)))
+	    if (connothash && depexistsHashHasEntry(connothash, rpmdsNId(provides)))
 		checkInstDeps(ts, dcache, p, RPMTAG_CONFLICTNAME, NULL, provides, 1);
 	}
 
 	if (reqfilehash || connotfilehash) {
 	    rpmfiles files = rpmteFiles(p);
-	    rpmfi fi = rpmfilesIter(files, RPMFI_ITER_FWD);;
+	    rpmfi fi = rpmfilesIter(files, RPMFI_ITER_FWD);
 	    while (rpmfiNext(fi) >= 0) {
 		if (RPMFILE_IS_INSTALLED(rpmfiFState(fi))) {
 		    if (reqfilehash)

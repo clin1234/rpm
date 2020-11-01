@@ -6,6 +6,7 @@
 #include "system.h"
 
 #include <errno.h>
+#include <stdlib.h>
 #include <sys/wait.h>
 
 #include <rpm/rpmlib.h>			/* RPMSIGTAG*, rpmReadPackageFile */
@@ -68,7 +69,8 @@ static int rpmPackageFilesArchive(rpmfiles fi, int isSrc,
  * @todo Create transaction set *much* earlier.
  */
 static rpmRC cpio_doio(FD_t fdo, Package pkg, const char * fmodeMacro,
-			rpm_loff_t *archiveSize)
+			int pld_algo,
+			rpm_loff_t *archiveSize, char ** pldig)
 {
     char *failedFile = NULL;
     FD_t cfd;
@@ -79,9 +81,12 @@ static rpmRC cpio_doio(FD_t fdo, Package pkg, const char * fmodeMacro,
     if (cfd == NULL)
 	return RPMRC_FAIL;
 
+    /* Calculate alternative (uncompressed) payload digest while writing */
+    fdInitDigestID(cfd, pld_algo, RPMTAG_PAYLOADDIGESTALT, 0);
     fsmrc = rpmPackageFilesArchive(pkg->cpioList, headerIsSource(pkg->header),
 				   cfd, pkg->dpaths,
 				   archiveSize, &failedFile);
+    fdFiniDigest(cfd, RPMTAG_PAYLOADDIGESTALT, (void **)pldig, NULL, 1);
 
     if (fsmrc) {
 	char *emsg = rpmfileStrerror(fsmrc);
@@ -103,25 +108,16 @@ static rpmRC addFileToTag(rpmSpec spec, const char * file,
 			  Header h, rpmTagVal tag, int append)
 {
     StringBuf sb = NULL;
-    char buf[BUFSIZ];
-    char * fn;
-    FILE * f;
     rpmRC rc = RPMRC_FAIL; /* assume failure */
+    int flags = ALLOW_EMPTY;
 
     /* no script file is not an error */
     if (file == NULL)
 	return RPMRC_OK;
 
-    fn = rpmGetPath("%{_builddir}/%{?buildsubdir:%{buildsubdir}/}", file, NULL);
-
-    f = fopen(fn, "r");
-    if (f == NULL) {
-	rpmlog(RPMLOG_ERR,_("Could not open %s file: %s\n"),
-			   rpmTagGetName(tag), file);
-	goto exit;
-    }
-
     sb = newStringBuf();
+    #pragma omp critical
+    {
     if (append) {
 	const char *s = headerGetString(h, tag);
 	if (s) {
@@ -130,21 +126,12 @@ static rpmRC addFileToTag(rpmSpec spec, const char * file,
 	}
     }
 
-    while (fgets(buf, sizeof(buf), f)) {
-	char *expanded;
-	if (rpmExpandMacros(spec->macros, buf, &expanded, 0) < 0) {
-	    rpmlog(RPMLOG_ERR, _("%s: line: %s\n"), fn, buf);
-	    goto exit;
-	}
-	appendStringBuf(sb, expanded);
-	free(expanded);
+    if (readManifest(spec, file, rpmTagGetName(tag), flags, NULL, &sb) >= 0) {
+	headerPutString(h, tag, getStringBuf(sb));
+	rc = RPMRC_OK;
     }
-    headerPutString(h, tag, getStringBuf(sb));
-    rc = RPMRC_OK;
 
-exit:
-    if (f) fclose(f);
-    free(fn);
+    } /* omp critical */
     freeStringBuf(sb);
 
     return rc;
@@ -465,6 +452,7 @@ static rpmRC writeRPM(Package pkg, unsigned char ** pkgidp,
     char * SHA256 = NULL;
     uint8_t * MD5 = NULL;
     char * pld = NULL;
+    char * upld = NULL;
     uint32_t pld_algo = PGPHASHALGO_SHA256; /* TODO: macro configuration */
     rpmRC rc = RPMRC_FAIL; /* assume failure */
     rpm_loff_t archiveSize = 0;
@@ -485,10 +473,11 @@ static rpmRC writeRPM(Package pkg, unsigned char ** pkgidp,
 	headerPutString(pkg->header, RPMTAG_COOKIE, *cookie);
     }
 
-    /* Create a dummy payload digest to get the header size right */
+    /* Create a dummy payload digests to get the header size right */
     pld = nullDigest(pld_algo, 1);
     headerPutUint32(pkg->header, RPMTAG_PAYLOADDIGESTALGO, &pld_algo, 1);
     headerPutString(pkg->header, RPMTAG_PAYLOADDIGEST, pld);
+    headerPutString(pkg->header, RPMTAG_PAYLOADDIGESTALT, pld);
     pld = _free(pld);
     
     /* Check for UTF-8 encoding of string tags, add encoding tag if all good */
@@ -529,7 +518,7 @@ static rpmRC writeRPM(Package pkg, unsigned char ** pkgidp,
 
     /* Write payload section (cpio archive) */
     payloadStart = Ftell(fd);
-    if (cpio_doio(fd, pkg, rpmio_flags, &archiveSize))
+    if (cpio_doio(fd, pkg, rpmio_flags, pld_algo, &archiveSize, &upld))
 	goto exit;
     payloadEnd = Ftell(fd);
 
@@ -539,9 +528,11 @@ static rpmRC writeRPM(Package pkg, unsigned char ** pkgidp,
 	goto exit;
     fdFiniDigest(fd, RPMTAG_PAYLOADDIGEST, (void **)&pld, NULL, 1);
 
-    /* Insert the payload digest in main header */
+    /* Insert the payload digests in main header */
     headerDel(pkg->header, RPMTAG_PAYLOADDIGEST);
     headerPutString(pkg->header, RPMTAG_PAYLOADDIGEST, pld);
+    headerDel(pkg->header, RPMTAG_PAYLOADDIGESTALT);
+    headerPutString(pkg->header, RPMTAG_PAYLOADDIGESTALT, upld);
     pld = _free(pld);
 
     /* Write the final header */
@@ -576,6 +567,7 @@ exit:
     free(rpmio_flags);
     free(SHA1);
     free(SHA256);
+    free(upld);
 
     /* XXX Fish the pkgid out of the signature header. */
     if (pkgidp != NULL) {
@@ -622,111 +614,180 @@ static rpmRC checkPackages(char *pkgcheck)
     return RPMRC_OK;
 }
 
-static rpmRC packageBinary(rpmSpec spec, Package pkg, const char *cookie, int cheating, char** filename)
+static rpmRC checkPackageSet(Package pkgs)
 {
-	const char *errorString;
-	rpmRC rc = RPMRC_OK;
+    char *pkglist = NULL;
+    char *pkgcheck_set = NULL;
+    rpmRC rc = RPMRC_OK;
 
-	if (pkg->fileList == NULL)
-	    return rc;
+    for (Package pkg = pkgs; pkg != NULL; pkg = pkg->next) {
+	if (pkg->filename)
+	    rstrscat(&pkglist, pkg->filename, " ", NULL);
+    }
 
-	if ((rc = processScriptFiles(spec, pkg)))
-	    return rc;
-	
-	if (cookie) {
-	    headerPutString(pkg->header, RPMTAG_COOKIE, cookie);
-	}
+    pkgcheck_set = rpmExpand("%{?_build_pkgcheck_set} ", pkglist,  NULL);
 
-	/* Copy changelog from src rpm */
-	headerCopyTags(spec->packages->header, pkg->header, copyTags);
-	
-	headerPutString(pkg->header, RPMTAG_RPMVERSION, VERSION);
-	headerPutString(pkg->header, RPMTAG_BUILDHOST, spec->buildHost);
-	headerPutUint32(pkg->header, RPMTAG_BUILDTIME, &(spec->buildTime), 1);
+    /* run only if _build_pkgcheck_set is defined */
+    if (pkgcheck_set[0] != ' ')
+	rc = checkPackages(pkgcheck_set);
 
-	if (spec->sourcePkgId != NULL) {
-	    headerPutBin(pkg->header, RPMTAG_SOURCEPKGID, spec->sourcePkgId,16);
-	}
-
-	if (cheating) {
-	    (void) rpmlibNeedsFeature(pkg, "ShortCircuited", "4.9.0-1");
-	}
-	
-	{   char *binFormat = rpmGetPath("%{_rpmfilename}", NULL);
-	    char *binRpm, *binDir;
-	    binRpm = headerFormat(pkg->header, binFormat, &errorString);
-	    free(binFormat);
-	    if (binRpm == NULL) {
-		rpmlog(RPMLOG_ERR, _("Could not generate output "
-		     "filename for package %s: %s\n"), 
-		     headerGetString(pkg->header, RPMTAG_NAME), errorString);
-		return RPMRC_FAIL;
-	    }
-	    *filename = rpmGetPath("%{_rpmdir}/", binRpm, NULL);
-	    if ((binDir = strchr(binRpm, '/')) != NULL) {
-		struct stat st;
-		char *dn;
-		*binDir = '\0';
-		dn = rpmGetPath("%{_rpmdir}/", binRpm, NULL);
-		if (stat(dn, &st) < 0) {
-		    switch (errno) {
-		    case  ENOENT:
-			if (mkdir(dn, 0755) == 0)
-			    break;
-		    default:
-			rpmlog(RPMLOG_ERR,_("cannot create %s: %s\n"),
-			    dn, strerror(errno));
-			break;
-		    }
-		}
-		free(dn);
-	    }
-	    free(binRpm);
-	}
-
-	rc = writeRPM(pkg, NULL, *filename, NULL, spec->buildTime, spec->buildHost);
-	if (rc == RPMRC_OK) {
-	    /* Do check each written package if enabled */
-	    char *pkgcheck = rpmExpand("%{?_build_pkgcheck} ", *filename, NULL);
-	    if (pkgcheck[0] != ' ') {
-		rc = checkPackages(pkgcheck);
-	    }
-	    free(pkgcheck);
-	}
-	return rc;
+    free(pkgcheck_set);
+    free(pkglist);
+    return rc;
 }
 
+/* watchout, argument is modified */
+static rpmRC ensureDir(char *binRpm)
+{
+    rpmRC rc = RPMRC_OK;
+    char *binDir = strchr(binRpm, '/');
+    char *dn = NULL;
+    if (binDir) {
+	struct stat st;
+	*binDir = '\0';
+	dn = rpmGetPath("%{_rpmdir}/", binRpm, NULL);
+	if (stat(dn, &st) < 0) {
+	    switch (errno) {
+	    case ENOENT:
+		if (mkdir(dn, 0755) == 0 || errno == EEXIST)
+		    break;
+	    default:
+		rpmlog(RPMLOG_ERR,_("cannot create %s: %s\n"),
+			dn, strerror(errno));
+		rc = RPMRC_FAIL;
+		break;
+	    }
+	}
+    }
+    free(dn);
+    return rc;
+}
+
+static rpmRC getPkgFilename(Header h, char **filename)
+{
+    const char *errorString;
+    char *binFormat = rpmGetPath("%{_rpmfilename}", NULL);
+    char *binRpm = headerFormat(h, binFormat, &errorString);
+    rpmRC rc = RPMRC_FAIL;
+
+    if (binRpm == NULL) {
+	rpmlog(RPMLOG_ERR, _("Could not generate output "
+	     "filename for package %s: %s\n"),
+	     headerGetString(h, RPMTAG_NAME), errorString);
+    } else {
+	*filename = rpmGetPath("%{_rpmdir}/", binRpm, NULL);
+	rc = ensureDir(binRpm);
+    }
+    free(binFormat);
+    free(binRpm);
+    return rc;
+}
+
+static rpmRC packageBinary(rpmSpec spec, Package pkg, const char *cookie, int cheating, char** filename)
+{
+    rpmRC rc = RPMRC_OK;
+
+    if (pkg->fileList == NULL)
+	return rc;
+
+    if ((rc = processScriptFiles(spec, pkg)))
+	return rc;
+
+    if (cookie) {
+	headerPutString(pkg->header, RPMTAG_COOKIE, cookie);
+    }
+
+    /* Copy changelog from src rpm */
+    #pragma omp critical
+    headerCopyTags(spec->sourcePackage->header, pkg->header, copyTags);
+
+    headerPutString(pkg->header, RPMTAG_RPMVERSION, VERSION);
+    headerPutString(pkg->header, RPMTAG_BUILDHOST, spec->buildHost);
+    headerPutUint32(pkg->header, RPMTAG_BUILDTIME, &(spec->buildTime), 1);
+
+    if (spec->sourcePkgId != NULL) {
+	headerPutBin(pkg->header, RPMTAG_SOURCEPKGID, spec->sourcePkgId,16);
+    }
+
+    if (cheating) {
+	(void) rpmlibNeedsFeature(pkg, "ShortCircuited", "4.9.0-1");
+    }
+
+    if ((rc = getPkgFilename(pkg->header, filename)))
+	return rc;
+
+    rc = writeRPM(pkg, NULL, *filename, NULL, spec->buildTime, spec->buildHost);
+    if (rc == RPMRC_OK) {
+	/* Do check each written package if enabled */
+	char *pkgcheck = rpmExpand("%{?_build_pkgcheck} ", *filename, NULL);
+	if (pkgcheck[0] != ' ') {
+	    rc = checkPackages(pkgcheck);
+	}
+	free(pkgcheck);
+    }
+    return rc;
+}
+
+static int compareBinaries(const void *p1, const void *p2) {
+    Package pkg1 = *(Package *)p1;
+    Package pkg2 = *(Package *)p2;
+    uint64_t size1 = headerGetNumber(pkg1->header, RPMTAG_LONGSIZE);
+    uint64_t size2 = headerGetNumber(pkg2->header, RPMTAG_LONGSIZE);
+    if (size1 > size2)
+        return -1;
+    if (size1 < size2)
+        return 1;
+    return 0;
+}
+
+/*
+ * Run binary creation in parallel, with task priority based on package size
+ * (largest first) to help achieve an optimal load distribution.
+ */
 rpmRC packageBinaries(rpmSpec spec, const char *cookie, int cheating)
 {
-    rpmRC rc;
+    rpmRC rc = RPMRC_OK;
     Package pkg;
-    char *pkglist = NULL;
+    Package *tasks;
+    int npkgs = 0;
 
-    for (pkg = spec->packages; pkg != NULL; pkg = pkg->next) {
-	char *fn = NULL;
-	rc = packageBinary(spec, pkg, cookie, cheating, &fn);
-	if (rc == RPMRC_OK) {
-	    rstrcat(&pkglist, fn);
-	    rstrcat(&pkglist, " ");
+    for (pkg = spec->packages; pkg != NULL; pkg = pkg->next)
+        npkgs++;
+    tasks = xcalloc(npkgs, sizeof(Package));
+
+    pkg = spec->packages;
+    for (int i = 0; i < npkgs; i++) {
+        tasks[i] = pkg;
+        pkg = pkg->next;
+    }
+    qsort(tasks, npkgs, sizeof(Package), compareBinaries);
+
+    #pragma omp parallel
+    #pragma omp single
+    for (int i = 0; i < npkgs; i++) {
+	Package pkg = tasks[i];
+	#pragma omp task untied priority(i)
+	{
+	pkg->rc = packageBinary(spec, pkg, cookie, cheating, &pkg->filename);
+	rpmlog(RPMLOG_DEBUG,
+		_("Finished binary package job, result %d, filename %s\n"),
+		pkg->rc, pkg->filename);
+	if (pkg->rc) {
+	    #pragma omp critical
+	    rc = pkg->rc;
 	}
-	free(fn);
-	if (rc != RPMRC_OK) {
-	    pkglist = _free(pkglist);
-	    return rc;
-	}
+	} /* omp task */
+	if (rc)
+	    break;
     }
 
     /* Now check the package set if enabled */
-    if (pkglist != NULL) {
-	char *pkgcheck_set = rpmExpand("%{?_build_pkgcheck_set} ", pkglist,  NULL);
-	if (pkgcheck_set[0] != ' ') {	/* run only if _build_pkgcheck_set is defined */
-	    checkPackages(pkgcheck_set);
-	}
-	free(pkgcheck_set);
-	pkglist = _free(pkglist);
-    }
-    
-    return RPMRC_OK;
+    if (rc == RPMRC_OK)
+	rc = checkPackageSet(spec->packages);
+
+    free(tasks);
+
+    return rc;
 }
 
 rpmRC packageSources(rpmSpec spec, char **cookie)
@@ -741,12 +802,16 @@ rpmRC packageSources(rpmSpec spec, char **cookie)
     headerPutUint32(sourcePkg->header, RPMTAG_BUILDTIME, &(spec->buildTime), 1);
     headerPutUint32(sourcePkg->header, RPMTAG_SOURCEPACKAGE, &one, 1);
 
+    if (spec->buildrequires) {
+	(void) rpmlibNeedsFeature(sourcePkg, "DynamicBuildRequires", "4.15.0-1");
+    }
+
     /* XXX this should be %_srpmdir */
-    {	char *fn = rpmGetPath("%{_srcrpmdir}/", spec->sourceRpmName,NULL);
-	char *pkgcheck = rpmExpand("%{?_build_pkgcheck_srpm} ", fn, NULL);
+    {	sourcePkg->filename = rpmGetPath("%{_srcrpmdir}/", spec->sourceRpmName,NULL);
+	char *pkgcheck = rpmExpand("%{?_build_pkgcheck_srpm} ", sourcePkg->filename, NULL);
 
 	spec->sourcePkgId = NULL;
-	rc = writeRPM(sourcePkg, &spec->sourcePkgId, fn, cookie, spec->buildTime, spec->buildHost);
+	rc = writeRPM(sourcePkg, &spec->sourcePkgId, sourcePkg->filename, cookie, spec->buildTime, spec->buildHost);
 
 	/* Do check SRPM package if enabled */
 	if (rc == RPMRC_OK && pkgcheck[0] != ' ') {
@@ -754,7 +819,6 @@ rpmRC packageSources(rpmSpec spec, char **cookie)
 	}
 
 	free(pkgcheck);
-	free(fn);
     }
     return rc;
 }

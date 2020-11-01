@@ -6,6 +6,9 @@
 #include "system.h"
 
 #include <errno.h>
+#ifdef ENABLE_OPENMP
+#include <omp.h>
+#endif
 #ifdef HAVE_ICONV
 #include <iconv.h>
 #endif
@@ -25,8 +28,6 @@
 #define ISMACRO(s,m,len) (rstreqn((s), (m), len) && !risalpha((s)[len]))
 #define ISMACROWITHARG(s,m,len) (rstreqn((s), (m), len) && (risblank((s)[len]) || !(s)[len]))
 
-#define LEN_AND_STR(_tag) (sizeof(_tag)-1), (_tag)
-
 typedef struct OpenFileInfo {
     char * fileName;
     FILE *fp;
@@ -44,6 +45,7 @@ static const struct PartRec {
 } partList[] = {
     { PART_PREAMBLE,      LEN_AND_STR("%package")},
     { PART_PREP,          LEN_AND_STR("%prep")},
+    { PART_BUILDREQUIRES, LEN_AND_STR("%generate_buildrequires")},
     { PART_BUILD,         LEN_AND_STR("%build")},
     { PART_INSTALL,       LEN_AND_STR("%install")},
     { PART_CHECK,         LEN_AND_STR("%check")},
@@ -142,6 +144,8 @@ static OFI_t * pushOFI(rpmSpec spec, const char *fn)
     ofi->readPtr = NULL;
     ofi->next = spec->fileStack;
 
+    rpmPushMacroFlags(spec->macros, "__file_name", NULL, fn, RMIL_SPEC, RPMMACRO_LITERAL);
+
     spec->fileStack = ofi;
     return spec->fileStack;
 }
@@ -158,6 +162,7 @@ static OFI_t * popOFI(rpmSpec spec)
 	free(ofi->fileName);
 	free(ofi->readBuf);
 	free(ofi);
+	rpmPopMacro(spec->macros, "__file_name");
     }
     return spec->fileStack;
 }
@@ -173,41 +178,11 @@ static int restoreFirstChar(rpmSpec spec)
     return 0;
 }
 
-typedef enum rpmParseLineType_e {
-    LINE_IF                = 0,
-    LINE_IFARCH            = (1 << 0),
-    LINE_IFNARCH           = (1 << 1),
-    LINE_IFOS              = (1 << 2),
-    LINE_IFNOS             = (1 << 3),
-    LINE_ELSE              = (1 << 4),
-    LINE_ENDIF             = (1 << 5),
-    LINE_INCLUDE           = (1 << 6),
-} rpmParseLineType;
-
-typedef const struct parsedSpecLine_s {
-    int id;
-    size_t textLen;
-    const char *text;
-    int withArgs;
-} * parsedSpecLine;
-
-static struct parsedSpecLine_s const implementedTypes[] = {
-    { LINE_IF,		LEN_AND_STR("%if")     , 1},
-    { LINE_IFARCH,	LEN_AND_STR("%ifarch") , 1},
-    { LINE_IFNARCH,	LEN_AND_STR("%ifnarch"), 1},
-    { LINE_IFOS,	LEN_AND_STR("%ifos")   , 1},
-    { LINE_IFNOS,	LEN_AND_STR("%ifnos")  , 1},
-    { LINE_ELSE,	LEN_AND_STR("%else")   , 0},
-    { LINE_ENDIF,	LEN_AND_STR("%endif")  , 0},
-    { LINE_INCLUDE,	LEN_AND_STR("%include"), 1},
-    { 0, 0, 0, 0 }
-};
-
 static parsedSpecLine parseLineType(char *line)
 {
     parsedSpecLine condition;
 
-    for (condition = implementedTypes; condition->text != NULL; condition++) {
+    for (condition = lineTypes; condition->text != NULL; condition++) {
 	if (condition->withArgs) {
 	    if (ISMACROWITHARG(line, condition->text, condition->textLen))
 		return condition;
@@ -220,12 +195,28 @@ static parsedSpecLine parseLineType(char *line)
     return NULL;
 }
 
+int specExpand(rpmSpec spec, int lineno, const char *sbuf,
+		char **obuf)
+{
+    char lnobuf[16];
+    int rc;
+
+    snprintf(lnobuf, sizeof(lnobuf), "%d", lineno);
+    rpmPushMacroFlags(spec->macros, "__file_lineno", NULL, lnobuf, RMIL_SPEC, RPMMACRO_LITERAL);
+
+    rc = (rpmExpandMacros(spec->macros, sbuf, obuf, 0) < 0);
+
+    rpmPopMacro(spec->macros, "__file_lineno");
+
+    return rc;
+}
 
 static int expandMacrosInSpecBuf(rpmSpec spec, int strip)
 {
     char *lbuf = NULL;
     int isComment = 0;
     parsedSpecLine condition;
+    OFI_t *ofi = spec->fileStack;
 
     lbuf = spec->lbuf;
     SKIPSPACE(lbuf);
@@ -242,15 +233,18 @@ static int expandMacrosInSpecBuf(rpmSpec spec, int strip)
 		condition->text, spec->lineNum, lbuf);
     }
 
+    /* Don't expand macros after %elif (resp. %elifarch, %elifos) in a false branch */
+    if (condition && (condition->id & LINE_ELIFANY)) {
+	if (!spec->readStack->readable)
+	    return 0;
     /* Don't expand macros (eg. %define) in false branch of %if clause */
-    if (!spec->readStack->reading)
-	return 0;
-
-    if (rpmExpandMacros(spec->macros, spec->lbuf, &lbuf, 0) < 0) {
-	rpmlog(RPMLOG_ERR, _("line %d: %s\n"),
-		spec->lineNum, spec->lbuf);
-	return 1;
+    } else {
+	if (!spec->readStack->reading)
+	    return 0;
     }
+
+    if (specExpand(spec, ofi->lineNum, spec->lbuf, &lbuf))
+	return 1;
 
     if (strip & STRIP_COMMENTS && isComment) {
 	char *bufA = spec->lbuf;
@@ -285,7 +279,7 @@ static int copyNextLineFromOFI(rpmSpec spec, OFI_t *ofi, int strip)
 {
     /* Expand next line from file into line buffer */
     if (!(spec->nextline && *spec->nextline)) {
-	int pc = 0, bc = 0, nc = 0;
+	int pc = 0, bc = 0, xc = 0, nc = 0;
 	const char *from = ofi->readPtr;
 	char ch = ' ';
 	while (from && *from && ch != '\n') {
@@ -315,6 +309,7 @@ static int copyNextLineFromOFI(rpmSpec spec, OFI_t *ofi, int strip)
 		    switch (*(p+1)) {
 			case '{': p++, bc++; break;
 			case '(': p++, pc++; break;
+			case '[': p++, xc++; break;
 			case '%': p++; break;
 		    }
 		    break;
@@ -322,11 +317,13 @@ static int copyNextLineFromOFI(rpmSpec spec, OFI_t *ofi, int strip)
 		case '}': if (bc > 0) bc--; break;
 		case '(': if (pc > 0) pc++; break;
 		case ')': if (pc > 0) pc--; break;
+		case '[': if (xc > 0) xc++; break;
+		case ']': if (xc > 0) xc--; break;
 	    }
 	}
 	
 	/* If it doesn't, ask for one more line. */
-	if (pc || bc || nc ) {
+	if (pc || bc || xc || nc ) {
 	    spec->nextline = "";
 	    return 1;
 	}
@@ -340,15 +337,29 @@ static int copyNextLineFromOFI(rpmSpec spec, OFI_t *ofi, int strip)
     return 0;
 }
 
-static void copyNextLineFinish(rpmSpec spec, int strip)
+static parsedSpecLine copyNextLineFinish(rpmSpec spec, int strip)
 {
     char *last;
     char ch;
+    char *s;
+    parsedSpecLine lineType;
 
     /* Find next line in expanded line buffer */
-    spec->line = last = spec->nextline;
+    s = spec->line = last = spec->nextline;
     ch = ' ';
+
+    /* skip space until '\n' or non space is reached */
+    while (*(s) && (*s != '\n') && risspace(*(s)))
+	(s)++;
+    lineType = parseLineType(s);
+
     while (*spec->nextline && ch != '\n') {
+	/* for conditionals and %include trim trailing '\' */
+	if (lineType && (*spec->nextline == '\\') &&
+	    (*spec->nextline+1) && (*(spec->nextline+1) == '\n')) {
+	    *spec->nextline = ' ';
+	    *(spec->nextline+1) = ' ';
+	}
 	ch = *spec->nextline++;
 	if (!risspace(ch))
 	    last = spec->nextline;
@@ -365,6 +376,8 @@ static void copyNextLineFinish(rpmSpec spec, int strip)
     
     if (strip & STRIP_TRAILINGSPACE)
 	*last = '\0';
+
+    return lineType;
 }
 
 static int readLineFromOFI(rpmSpec spec, OFI_t *ofi)
@@ -420,12 +433,14 @@ do { \
 int readLine(rpmSpec spec, int strip)
 {
     char *s;
-    int match;
+    int match = 0;
     struct ReadLevelEntry *rl;
     OFI_t *ofi = spec->fileStack;
     int rc;
     int startLine = 0;
     parsedSpecLine lineType;
+    int prevType = spec->readStack->lastConditional->id;
+    int checkCondition;
 
     if (!restoreFirstChar(spec)) {
 retry:
@@ -455,55 +470,56 @@ retry:
 	}
     }
 
-    copyNextLineFinish(spec, strip);
-
+    lineType = copyNextLineFinish(spec, strip);
     s = spec->line;
     SKIPSPACE(s);
-
-    match = -1;
-    lineType = parseLineType(s);
     if (!lineType)
 	goto after_classification;
-    if (!spec->readStack->reading && (lineType->id == LINE_IF)) {
-	match = 0;
-    } else if (lineType->id == LINE_IFARCH) {
+
+    /* check ordering of the conditional */
+    if (lineType->isConditional && (prevType & lineType->wrongPrecursors)) {
+	if (prevType == LINE_ENDIF) {
+	    rpmlog(RPMLOG_ERR,_("%s: line %d: %s with no %%if\n"),
+		ofi->fileName, ofi->lineNum, lineType->text);
+	} else {
+	    rpmlog(RPMLOG_ERR,_("%s: line %d: %s after %s\n"),
+		ofi->fileName, ofi->lineNum, lineType->text,
+		spec->readStack->lastConditional->text);
+	}
+	return PART_ERROR;
+    }
+
+    if (lineType->id & (LINE_IFARCH | LINE_ELIFARCH)) {
 	ARGMATCH(s, "%{_target_cpu}", match);
     } else if (lineType->id == LINE_IFNARCH) {
 	ARGMATCH(s, "%{_target_cpu}", match);
 	match = !match;
-    } else if (lineType->id == LINE_IFOS) {
+    } else if (lineType->id & (LINE_IFOS | LINE_ELIFOS)) {
 	ARGMATCH(s, "%{_target_os}", match);
     } else if (lineType->id == LINE_IFNOS) {
 	ARGMATCH(s, "%{_target_os}", match);
 	match = !match;
-    } else if (lineType->id == LINE_IF) {
-	s += 3;
-        match = parseExpressionBoolean(s);
-	if (match < 0) {
-	    rpmlog(RPMLOG_ERR,
-			_("%s:%d: bad %%if condition\n"),
-			ofi->fileName, ofi->lineNum);
-	    return PART_ERROR;
+    } else if (lineType->id & (LINE_IF | LINE_ELIF)) {
+	s += lineType->textLen;
+	if (lineType->id == LINE_IF)
+	    checkCondition = spec->readStack->reading;
+	else
+	    checkCondition = spec->readStack->readable;
+	if (checkCondition) {
+	    match = rpmExprBoolFlags(s, 0);
+	    if (match < 0) {
+		rpmlog(RPMLOG_ERR,
+			    _("%s:%d: bad %s condition: %s\n"),
+			    ofi->fileName, ofi->lineNum, lineType->text, s);
+		return PART_ERROR;
+	    }
 	}
     } else if (lineType->id == LINE_ELSE) {
-	if (! spec->readStack->next) {
-	    /* Got an else with no %if ! */
-	    rpmlog(RPMLOG_ERR,
-			_("%s:%d: Got a %%else with no %%if\n"),
-			ofi->fileName, ofi->lineNum);
-	    return PART_ERROR;
-	}
+	spec->readStack->lastConditional = lineType;
 	spec->readStack->reading =
-	    spec->readStack->next->reading && ! spec->readStack->reading;
+	    spec->readStack->next->reading && spec->readStack->readable;
 	spec->line[0] = '\0';
     } else if (lineType->id == LINE_ENDIF) {
-	if (! spec->readStack->next) {
-	    /* Got an end with no %if ! */
-	    rpmlog(RPMLOG_ERR,
-			_("%s:%d: Got a %%endif with no %%if\n"),
-			ofi->fileName, ofi->lineNum);
-	    return PART_ERROR;
-	}
 	rl = spec->readStack;
 	spec->readStack = spec->readStack->next;
 	free(rl);
@@ -531,16 +547,23 @@ retry:
 	goto retry;
     }
 
-after_classification:
-    if (match != -1) {
+    if (lineType->id & LINE_IFANY) {
 	rl = xmalloc(sizeof(*rl));
 	rl->reading = spec->readStack->reading && match;
 	rl->next = spec->readStack;
 	rl->lineNum = ofi->lineNum;
+	rl->readable = (!rl->reading) && (spec->readStack->reading);
+	rl->lastConditional = lineType;
 	spec->readStack = rl;
+	spec->line[0] = '\0';
+    } else if (lineType->id & LINE_ELIFANY) {
+	spec->readStack->reading = spec->readStack->readable && match;
+	if (spec->readStack->reading)
+	    spec->readStack->readable = 0;
 	spec->line[0] = '\0';
     }
 
+after_classification:
     if (! spec->readStack->reading) {
 	spec->line[0] = '\0';
     }
@@ -667,6 +690,17 @@ static void initSourceHeader(rpmSpec spec)
 		headerPutUint32(sourcePkg->header, RPMTAG_NOPATCH,
 				&srcPtr->num, 1);
 	    }
+	}
+    }
+
+    /* Provide all package NEVRs that would be built */
+    for (Package p = spec->packages; p != NULL; p = p->next) {
+	if (p->fileList) {
+	    Header h = sourcePkg->header;
+	    uint32_t dsflags = rpmdsFlags(p->ds);
+	    headerPutString(h, RPMTAG_PROVIDENAME, rpmdsN(p->ds));
+	    headerPutUint32(h, RPMTAG_PROVIDEFLAGS, &dsflags, 1);
+	    headerPutString(h, RPMTAG_PROVIDEVERSION, rpmdsEVR(p->ds));
 	}
     }
 }
@@ -902,6 +936,10 @@ static rpmSpec parseSpec(const char *specFile, rpmSpecFlags flags,
 	case PART_PREP:
 	    parsePart = parsePrep(spec);
 	    break;
+	case PART_BUILDREQUIRES:
+	    parsePart = parseSimpleScript(spec, "%generate_buildrequires",
+					  &(spec->buildrequires));
+	    break;
 	case PART_BUILD:
 	    parsePart = parseSimpleScript(spec, "%build", &(spec->build));
 	    break;
@@ -1010,6 +1048,27 @@ static rpmSpec parseSpec(const char *specFile, rpmSpecFlags flags,
 	    goto exit;
 	}
     }
+
+#ifdef ENABLE_OPENMP
+    /* Set number of OMP threads centrally */
+    int nthreads = rpmExpandNumeric("%{?_smp_build_nthreads}");
+    int nthreads_max = rpmExpandNumeric("%{?_smp_nthreads_max}");
+    if (nthreads <= 0)
+        nthreads = omp_get_max_threads();
+    if (nthreads_max > 0 && nthreads > nthreads_max)
+	nthreads = nthreads_max;
+#if __WORDSIZE == 32
+    /* On 32bit platforms, address space shortage is an issue. Play safe. */
+    int platlimit = 4;
+    if (nthreads > platlimit) {
+	nthreads = platlimit;
+	rpmlog(RPMLOG_DEBUG,
+	    "limiting number of threads to %d due to platform\n", platlimit);
+    }
+#endif
+    if (nthreads > 0)
+	omp_set_num_threads(nthreads);
+#endif
 
     if (spec->clean == NULL) {
 	char *body = rpmExpand("%{?buildroot: %{__rm} -rf %{buildroot}}", NULL);

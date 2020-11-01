@@ -17,7 +17,7 @@ int parseFiles(rpmSpec spec)
     int rc, argc;
     int arg;
     const char ** argv = NULL;
-    const char *name = NULL;
+    char *name = NULL;
     int flag = PART_SUBNAME;
     poptContext optCon = NULL;
     struct poptOption optionsTable[] = {
@@ -27,7 +27,7 @@ int parseFiles(rpmSpec spec)
     };
 
     /* XXX unmask %license while parsing %files */
-    rpmPushMacro(spec->macros, "license", NULL, "%%license", RMIL_SPEC);
+    rpmPushMacroFlags(spec->macros, "license", NULL, "%license", RMIL_SPEC, RPMMACRO_LITERAL);
 
     if ((rc = poptParseArgvString(spec->line, &argc, &argv))) {
 	rpmlog(RPMLOG_ERR, _("line %d: Error parsing %%files: %s\n"),
@@ -52,7 +52,7 @@ int parseFiles(rpmSpec spec)
 
     if (poptPeekArg(optCon)) {
 	if (name == NULL)
-	    name = poptGetArg(optCon);
+	    name = xstrdup(poptGetArg(optCon));
 	if (poptPeekArg(optCon)) {
 	    rpmlog(RPMLOG_ERR, _("line %d: Too many names: %s\n"),
 		     spec->lineNum,
@@ -89,6 +89,7 @@ int parseFiles(rpmSpec spec)
 exit:
     rpmPopMacro(NULL, "license");
     free(argv);
+    free(name);
     poptFreeContext(optCon);
 	
     return res;

@@ -5,8 +5,12 @@
 #include <sys/select.h>
 #include <sys/wait.h>
 #include <signal.h>
+#include <fcntl.h>
 #include <magic.h>
 #include <regex.h>
+#ifdef HAVE_LIBELF
+#include <gelf.h>
+#endif
 
 #include <rpm/header.h>
 #include <rpm/argv.h>
@@ -25,6 +29,7 @@
 struct matchRule {
     regex_t *path;
     regex_t *magic;
+    regex_t *mime;
     ARGV_t flags;
 };
 
@@ -67,6 +72,7 @@ struct rpmfc_s {
     rpmfcAttr *atypes;	/*!< known file attribute types */
 
     char ** fn;		/*!< (no. files) file names */
+    char ** ftype;	/*!< (no. files) file types */
     ARGV_t *fattrs;	/*!< (no. files) file attribute tokens */
     rpm_color_t *fcolor;/*!< (no. files) file colors */
     rpmsid *fcdictx;	/*!< (no. files) file class dictionary indices */
@@ -114,6 +120,7 @@ static void ruleFree(struct matchRule *rule)
 {
     regFree(rule->path);
     regFree(rule->magic);
+    regFree(rule->mime);
     argvFree(rule->flags);
 }
 
@@ -199,12 +206,21 @@ static rpmfcAttr rpmfcAttrNew(const char *name)
 
 	    (*rule)->path = rpmfcAttrReg(name, prefix, "path", NULL);
 	    (*rule)->magic = rpmfcAttrReg(name, prefix, "magic", NULL);
+	    (*rule)->mime = rpmfcAttrReg(name, prefix, "mime", NULL);
 	} else {
 	    flags = rpmfcAttrMacro(name, "flags", NULL);
 
 	    (*rule)->path = rpmfcAttrReg(name, "path", NULL);
 	    (*rule)->magic = rpmfcAttrReg(name, "magic", NULL);
+	    (*rule)->mime = rpmfcAttrReg(name, "mime", NULL);
 	}
+	if ((*rule)->magic && (*rule)->mime) {
+	    rpmlog(RPMLOG_WARNING,
+		_("%s: mime and magic supplied, only mime will be used\n"),
+		name);
+	}
+
+
 	(*rule)->flags = argvSplitString(flags, ",", ARGV_SKIPEMPTY);
 	argvSort((*rule)->flags, NULL);
 
@@ -260,7 +276,7 @@ static rpmds rpmdsSingleNS(rpmstrPool pool,
 static int getOutputFrom(ARGV_t argv,
 			 const char * writePtr, size_t writeBytesLeft,
 			 StringBuf sb_stdout,
-			 int failNonZero, const char *buildRoot, FILE *dup)
+			 int failNonZero, const char *buildRoot)
 {
     pid_t child, reaped;
     int toProg[2] = { -1, -1 };
@@ -268,13 +284,25 @@ static int getOutputFrom(ARGV_t argv,
     int status;
     int myerrno = 0;
     int ret = 1; /* assume failure */
+    int doio = (writePtr || sb_stdout);
 
-    if (pipe(toProg) < 0 || pipe(fromProg) < 0) {
+    if (doio && (pipe(toProg) < 0 || pipe(fromProg) < 0)) {
 	rpmlog(RPMLOG_ERR, _("Couldn't create pipe for %s: %m\n"), argv[0]);
 	return -1;
     }
     
     child = fork();
+    if (child < 0) {
+	rpmlog(RPMLOG_ERR, _("Couldn't fork %s: %s\n"),
+		argv[0], strerror(errno));
+	if (doio) {
+	    close(toProg[1]);
+	    close(toProg[0]);
+	    close(fromProg[0]);
+	    close(fromProg[1]);
+	}
+	return -1;
+    }
     if (child == 0) {
 	close(toProg[1]);
 	close(fromProg[0]);
@@ -297,11 +325,9 @@ static int getOutputFrom(ARGV_t argv,
 		argv[0], strerror(errno));
 	_exit(EXIT_FAILURE);
     }
-    if (child < 0) {
-	rpmlog(RPMLOG_ERR, _("Couldn't fork %s: %s\n"),
-		argv[0], strerror(errno));
-	return -1;
-    }
+
+    if (!doio)
+	goto reap;
 
     close(toProg[0]);
     close(fromProg[1]);
@@ -365,8 +391,6 @@ static int getOutputFrom(ARGV_t argv,
 	    buf[iorc] = '\0';
 	    if (sb_stdout)
 		appendStringBuf(sb_stdout, buf);
-	    if (dup)
-		fprintf(dup, "%s", buf);
 	}
     }
 
@@ -376,13 +400,14 @@ static int getOutputFrom(ARGV_t argv,
     if (fromProg[0] >= 0)
 	close(fromProg[0]);
 
+reap:
     /* Collect status from prog */
     reaped = waitpid(child, &status, 0);
     rpmlog(RPMLOG_DEBUG, "\twaitpid(%d) rc %d status %x\n",
         (unsigned)child, (unsigned)reaped, status);
 
     if (failNonZero && (!WIFEXITED(status) || WEXITSTATUS(status))) {
-	rpmlog(RPMLOG_ERR, _("%s failed: %x\n"), argv[0], status);
+	rpmlog(RPMLOG_DEBUG, _("%s failed: %x\n"), argv[0], status);
 	goto exit;
     }
     if (writeBytesLeft || myerrno) {
@@ -397,7 +422,7 @@ exit:
 }
 
 int rpmfcExec(ARGV_const_t av, StringBuf sb_stdin, StringBuf * sb_stdoutp,
-		int failnonzero, const char *buildRoot, FILE *dup)
+		int failnonzero, const char *buildRoot)
 {
     char * s = NULL;
     ARGV_t xav = NULL;
@@ -443,17 +468,16 @@ int rpmfcExec(ARGV_const_t av, StringBuf sb_stdin, StringBuf * sb_stdoutp,
 	sb = newStringBuf();
     }
     ec = getOutputFrom(xav, buf_stdin, buf_stdin_len, sb,
-		       failnonzero, buildRoot, dup);
+		       failnonzero, buildRoot);
     if (ec) {
 	sb = freeStringBuf(sb);
+	goto exit;
     }
 
     if (sb_stdoutp != NULL) {
 	*sb_stdoutp = sb;
 	sb = NULL;	/* XXX don't free */
     }
-
-    ec = 0;
 
 exit:
     freeStringBuf(sb);
@@ -494,13 +518,32 @@ static ARGV_t runCmd(const char *cmd,
     argvAdd(&av, cmd);
 
     appendLineStringBuf(sb_stdin, fn);
-    if (rpmfcExec(av, sb_stdin, &sb_stdout, 0, buildRoot, NULL) == 0) {
+    if (rpmfcExec(av, sb_stdin, &sb_stdout, 0, buildRoot) == 0) {
 	argvSplit(&output, getStringBuf(sb_stdout), "\n\r");
     }
 
     argvFree(av);
     freeStringBuf(sb_stdin);
     freeStringBuf(sb_stdout);
+
+    return output;
+}
+
+static ARGV_t runCall(const char *cmd,
+		     const char *buildRoot, const char *fn)
+{
+    ARGV_t output = NULL;
+
+    if (_rpmfc_debug)
+	rpmlog(RPMLOG_DEBUG, "Calling %s() on %s\n", cmd, fn);
+
+    /* Hack to pass in the path as what looks like a macro argument */
+    rpmPushMacroFlags(NULL, "1", NULL, fn, 1, RPMMACRO_LITERAL);
+    char *exp = rpmExpand(cmd, NULL);
+    rpmPopMacro(NULL, "1");
+    if (*exp)
+	argvSplit(&output, exp, "\n\r");
+    free(exp);
 
     return output;
 }
@@ -551,7 +594,7 @@ static void exclFini(struct exclreg_s *excl)
 
 static int rpmfcHelper(rpmfc fc, int ix, const struct exclreg_s *excl,
 		       rpmsenseFlags dsContext, rpmTagVal tagN,
-		       const char *namespace, const char *cmd)
+		       const char *namespace, const char *cmd, int callable)
 {
     ARGV_t pav = NULL;
     const char * fn = fc->fn[ix];
@@ -565,7 +608,12 @@ static int rpmfcHelper(rpmfc fc, int ix, const struct exclreg_s *excl,
     if (regMatch(excl->global_exclude_from, fn+fc->brlen))
 	goto exit;
 
-    pav = runCmd(cmd, fc->buildRoot, fn);
+    if (callable) {
+	pav = runCall(cmd, fc->buildRoot, fn);
+    } else {
+	pav = runCmd(cmd, fc->buildRoot, fn);
+    }
+
     if (pav == NULL)
 	goto exit;
 
@@ -587,7 +635,7 @@ exit:
     return rc;
 }
 
-/* Only used for elf coloring and controlling RPMTAG_FILECLASS inclusion now */
+/* Only used for controlling RPMTAG_FILECLASS inclusion now */
 static const struct rpmfcTokens_s rpmfcTokens[] = {
   { "directory",		RPMFC_INCLUDE },
 
@@ -648,18 +696,22 @@ static void argvAddTokens(ARGV_t *argv, const char *tnames)
 }
 
 static int matches(const struct matchRule *rule,
-		   const char *ftype, const char *path, int executable)
+		   const char *ftype, const char *fmime,
+		    const char *path, int executable)
 {
+    const char *mtype = rule->mime ? fmime : ftype;
+    regex_t *mreg = rule->mime ? rule->mime : rule->magic;
+
     if (!executable && hasAttr(rule->flags, "exeonly"))
 	return 0;
-    if (rule->magic && rule->path && hasAttr(rule->flags, "magic_and_path")) {
-	return (regMatch(rule->magic, ftype) && regMatch(rule->path, path));
+    if (mreg && rule->path && hasAttr(rule->flags, "magic_and_path")) {
+	return (regMatch(mreg, mtype) && regMatch(rule->path, path));
     } else {
-	return (regMatch(rule->magic, ftype) || regMatch(rule->path, path));
+	return (regMatch(mreg, mtype) || regMatch(rule->path, path));
     }
 }
 
-static void rpmfcAttributes(rpmfc fc, int ix, const char *ftype, const char *fullpath)
+static void rpmfcAttributes(rpmfc fc, int ix, const char *ftype, const char *fmime, const char *fullpath)
 {
     const char *path = fullpath + fc->brlen;
     int is_executable = 0;
@@ -671,12 +723,13 @@ static void rpmfcAttributes(rpmfc fc, int ix, const char *ftype, const char *ful
 
     for (rpmfcAttr *attr = fc->atypes; attr && *attr; attr++) {
 	/* Filter out excludes */
-	if (matches(&(*attr)->excl, ftype, path, is_executable))
+	if (matches(&(*attr)->excl, ftype, fmime, path, is_executable))
 	    continue;
 
 	/* Add attributes on libmagic type & path pattern matches */
-	if (matches(&(*attr)->incl, ftype, path, is_executable)) {
+	if (matches(&(*attr)->incl, ftype, fmime, path, is_executable)) {
 	    argvAddTokens(&fc->fattrs[ix], (*attr)->name);
+	    #pragma omp critical(fahash)
 	    fattrHashAddEntry(fc->fahash, attr-fc->atypes, ix);
 	}
     }
@@ -770,9 +823,11 @@ rpmfc rpmfcFree(rpmfc fc)
 	free(fc->buildRoot);
 	for (int i = 0; i < fc->nfiles; i++) {
 	    free(fc->fn[i]);
+	    free(fc->ftype[i]);
 	    argvFree(fc->fattrs[i]);
 	}
 	free(fc->fn);
+	free(fc->ftype);
 	free(fc->fattrs);
 	free(fc->fcolor);
 	free(fc->fcdictx);
@@ -864,6 +919,11 @@ rpmds rpmfcObsoletes(rpmfc fc)
     return rpmfcDependencies(fc, RPMTAG_OBSOLETENAME);
 }
 
+rpmds rpmfcOrderWithRequires(rpmfc fc)
+{
+    return rpmfcDependencies(fc, RPMTAG_ORDERNAME);
+}
+
 
 /* Versioned deps are less than unversioned deps */
 static int cmpVerDeps(const void *a, const void *b)
@@ -952,32 +1012,48 @@ static const struct applyDep_s applyDepTable[] = {
     { RPMTAG_ENHANCENAME,	RPMSENSE_FIND_REQUIRES, "enhances" },
     { RPMTAG_CONFLICTNAME,	RPMSENSE_FIND_REQUIRES, "conflicts" },
     { RPMTAG_OBSOLETENAME,	RPMSENSE_FIND_REQUIRES, "obsoletes" },
+    { RPMTAG_ORDERNAME,	        RPMSENSE_FIND_REQUIRES, "orderwithrequires" },
     { 0, 0, NULL },
 };
 
-static void applyAttr(rpmfc fc, int aix, const char *aname,
+static int applyAttr(rpmfc fc, int aix, const char *aname,
 			const struct exclreg_s *excl,
 			const struct applyDep_s *dep)
 {
+    int rc = 0;
     int n, *ixs;
 
     if (fattrHashGetEntry(fc->fahash, aix, &ixs, &n, NULL)) {
 	char *mname = rstrscat(NULL, "__", aname, "_", dep->name, NULL);
-	char *cmd = rpmExpand("%{?", mname, ":%{", mname, "} %{?",
+	char *cmd;
+	int callable = rpmMacroIsParametric(NULL, mname);
+
+	if (callable) {
+	    cmd = rstrscat(NULL, "%{", mname,
+				" %{?", mname, "_opts}", "}", NULL);
+	} else {
+	    cmd = rpmExpand("%{?", mname, ":%{", mname, "} %{?",
 				mname, "_opts}}", NULL);
+	}
+
 	if (!rstreq(cmd, "")) {
 	    char *ns = rpmfcAttrMacro(aname, "namespace", NULL);
-	    for (int i = 0; i < n; i++)
-		rpmfcHelper(fc, ixs[i], excl, dep->type, dep->tag, ns, cmd);
+	    for (int i = 0; i < n; i++) {
+		if (rpmfcHelper(fc, ixs[i], excl, dep->type, dep->tag,
+				ns, cmd, callable))
+		    rc = 1;
+	    }
 	    free(ns);
 	}
 	free(cmd);
 	free(mname);
     }
+    return rc;
 }
 
 static rpmRC rpmfcApplyInternal(rpmfc fc)
 {
+    rpmRC rc = RPMRC_OK;
     rpmds ds, * dsp;
     int previx;
     unsigned int val;
@@ -998,8 +1074,10 @@ static rpmRC rpmfcApplyInternal(rpmfc fc)
 	if (skip & dep->type)
 	    continue;
 	exclInit(dep->name, &excl);
-	for (rpmfcAttr *attr = fc->atypes; attr && *attr; attr++, aix++)
-	    applyAttr(fc, aix, (*attr)->name, &excl, dep);
+	for (rpmfcAttr *attr = fc->atypes; attr && *attr; attr++, aix++) {
+	    if (applyAttr(fc, aix, (*attr)->name, &excl, dep))
+		rc = RPMRC_FAIL;
+	}
 	exclFini(&excl);
     }
     /* No more additions after this, freeze pool to minimize memory use */
@@ -1035,7 +1113,7 @@ static rpmRC rpmfcApplyInternal(rpmfc fc)
 	    fc->fddictn->vals[ix]++;
 
     }
-    return RPMRC_OK;
+    return rc;
 }
 
 static int initAttrs(rpmfc fc)
@@ -1060,10 +1138,36 @@ static int initAttrs(rpmfc fc)
     return nattrs;
 }
 
+static uint32_t getElfColor(const char *fn)
+{
+    uint32_t color = 0;
+#ifdef HAVE_LIBELF
+    int fd = open(fn, O_RDONLY);
+    if (fd >= 0) {
+	Elf *elf = elf_begin (fd, ELF_C_READ, NULL);
+	GElf_Ehdr ehdr;
+	if (elf && gelf_getehdr(elf, &ehdr)) {
+	    switch (ehdr.e_ident[EI_CLASS]) {
+	    case ELFCLASS64:
+		color = RPMFC_ELF64;
+		break;
+	    case ELFCLASS32:
+		color = RPMFC_ELF32;
+		break;
+	    }
+	    elf_end(elf);
+	}
+	close(fd);
+    }
+#endif
+    return color;
+}
+
 rpmRC rpmfcClassify(rpmfc fc, ARGV_t argv, rpm_mode_t * fmode)
 {
-    int msflags = MAGIC_CHECK | MAGIC_COMPRESS | MAGIC_NO_CHECK_TOKENS;
-    magic_t ms = NULL;
+    int msflags = MAGIC_CHECK | MAGIC_COMPRESS | MAGIC_NO_CHECK_TOKENS | MAGIC_ERROR;
+    int mimeflags = msflags | MAGIC_MIME_TYPE;
+    int nerrors = 0;
     rpmRC rc = RPMRC_FAIL;
 
     if (fc == NULL) {
@@ -1082,6 +1186,7 @@ rpmRC rpmfcClassify(rpmfc fc, ARGV_t argv, rpm_mode_t * fmode)
 
     fc->nfiles = argvCount(argv);
     fc->fn = xcalloc(fc->nfiles, sizeof(*fc->fn));
+    fc->ftype = xcalloc(fc->nfiles, sizeof(*fc->ftype));
     fc->fattrs = xcalloc(fc->nfiles, sizeof(*fc->fattrs));
     fc->fcolor = xcalloc(fc->nfiles, sizeof(*fc->fcolor));
     fc->fcdictx = xcalloc(fc->nfiles, sizeof(*fc->fcdictx));
@@ -1094,20 +1199,30 @@ rpmRC rpmfcClassify(rpmfc fc, ARGV_t argv, rpm_mode_t * fmode)
     /* Build (sorted) file class dictionary. */
     fc->cdict = rpmstrPoolCreate();
 
-    ms = magic_open(msflags);
-    if (ms == NULL) {
+    #pragma omp parallel
+    {
+    /* libmagic is not thread-safe, each thread needs to a private handle */
+    magic_t ms = magic_open(msflags);
+    magic_t mime = magic_open(mimeflags);
+
+    if (ms == NULL || mime == NULL) {
 	rpmlog(RPMLOG_ERR, _("magic_open(0x%x) failed: %s\n"),
 		msflags, strerror(errno));
-	goto exit;
+	#pragma omp cancel parallel
     }
 
     if (magic_load(ms, NULL) == -1) {
 	rpmlog(RPMLOG_ERR, _("magic_load failed: %s\n"), magic_error(ms));
-	goto exit;
+	#pragma omp cancel parallel
+    }
+    if (magic_load(mime, NULL) == -1) {
+	rpmlog(RPMLOG_ERR, _("magic_load failed: %s\n"), magic_error(mime));
+	#pragma omp cancel parallel
     }
 
+    #pragma omp for reduction(+:nerrors)
     for (int ix = 0; ix < fc->nfiles; ix++) {
-	rpmsid ftypeId;
+	const char * fmime;
 	const char * ftype;
 	const char * s = argv[ix];
 	size_t slen = strlen(s);
@@ -1142,20 +1257,41 @@ rpmRC rpmfcClassify(rpmfc fc, ARGV_t argv, rpm_mode_t * fmode)
 	    else
 		ftype = magic_file(ms, s);
 
+	    /* Silence errors from immaterial %ghosts */
+	    if (ftype == NULL && errno == ENOENT)
+		ftype = "";
+
 	    if (ftype == NULL) {
 		rpmlog(is_executable ? RPMLOG_ERR : RPMLOG_WARNING, 
 		       _("Recognition of file \"%s\" failed: mode %06o %s\n"),
 		       s, mode, magic_error(ms));
 		/* only executable files are critical to dep extraction */
 		if (is_executable) {
-		    goto exit;
+		    nerrors++;
 		}
 		/* unrecognized non-executables get treated as "data" */
 		ftype = "data";
 	    }
 	}
 
-	rpmlog(RPMLOG_DEBUG, "%s: %s\n", s, ftype);
+	fmime = magic_file(mime, s);
+
+	/* Silence errors from immaterial %ghosts */
+	if (fmime == NULL && errno == ENOENT)
+	    fmime = "";
+
+	if (fmime == NULL) {
+	    rpmlog(is_executable ? RPMLOG_ERR : RPMLOG_WARNING,
+		   _("Recognition of file \"%s\" failed: mode %06o %s\n"),
+		   s, mode, magic_error(ms));
+	    /* only executable files are critical to dep extraction */
+	    if (is_executable) {
+		nerrors++;
+	    }
+	    fmime = "application/octet-stream";
+	}
+
+	rpmlog(RPMLOG_DEBUG, "%s: %s (%s)\n", s, fmime, ftype);
 
 	/* Save the path. */
 	fc->fn[ix] = xstrdup(s);
@@ -1164,28 +1300,41 @@ rpmRC rpmfcClassify(rpmfc fc, ARGV_t argv, rpm_mode_t * fmode)
 	fcolor |= rpmfcColor(ftype);
 
 	/* Add attributes based on file type and/or path */
-	rpmfcAttributes(fc, ix, ftype, s);
+	rpmfcAttributes(fc, ix, ftype, fmime, s);
 
-	fc->fcolor[ix] = fcolor;
+	if (fcolor != RPMFC_WHITE && (fcolor & RPMFC_INCLUDE))
+	    fc->ftype[ix] = xstrdup(ftype);
 
-	/* Add to file class dictionary and index array */
-	if (fcolor != RPMFC_WHITE && (fcolor & RPMFC_INCLUDE)) {
-	    ftypeId = rpmstrPoolId(fc->cdict, ftype, 1);
-	    fc->fknown++;
-	} else {
-	    ftypeId = rpmstrPoolId(fc->cdict, "", 1);
-	    fc->fwhite++;
-	}
-	/* Pool id's start from 1, for headers we want it from 0 */
-	fc->fcdictx[ix] = ftypeId - 1;
+	/* Add ELF colors */
+	if (S_ISREG(mode) && is_executable)
+	    fc->fcolor[ix] = getElfColor(s);
     }
-    rc = RPMRC_OK;
+
+    if (ms != NULL)
+	magic_close(ms);
+    if (mime != NULL)
+	magic_close(mime);
+
+    } /* omp parallel */
+
+    /* Add to file class dictionary and index array */
+    for (int ix = 0; ix < fc->nfiles; ix++) {
+	const char *ftype = fc->ftype[ix] ? fc->ftype[ix] : "";
+	/* Pool id's start from 1, for headers we want it from 0 */
+	fc->fcdictx[ix] = rpmstrPoolId(fc->cdict, ftype, 1) - 1;
+
+	if (*ftype)
+	    fc->fknown++;
+	else
+	    fc->fwhite++;
+    }
+
+    if (nerrors == 0)
+	rc = RPMRC_OK;
 
 exit:
     /* No more additions after this, freeze pool to minimize memory use */
     rpmstrPoolFreeze(fc->cdict, 0);
-    if (ms != NULL)
-	magic_close(ms);
 
     return rc;
 }
@@ -1253,6 +1402,9 @@ static struct DepMsg_s depMsgs[] = {
 	0, -1 },
   { "Enhances",		{ "%{?__find_enhances}", NULL, NULL, NULL },
 	RPMTAG_ENHANCENAME, RPMTAG_ENHANCEVERSION, RPMTAG_ENHANCEFLAGS,
+	0, -1 },
+  { "OrderWithRequires",	{ "%{?__find_orderwithrequires}", NULL, NULL, NULL },
+	RPMTAG_ORDERNAME, RPMTAG_ORDERVERSION, RPMTAG_ORDERFLAGS,
 	0, -1 },
   { NULL,		{ NULL, NULL, NULL, NULL },	0, 0, 0, 0, 0 }
 };
@@ -1327,6 +1479,7 @@ static rpmRC rpmfcApplyExternal(rpmfc fc)
 	case RPMTAG_ENHANCEFLAGS:
 	case RPMTAG_CONFLICTFLAGS:
 	case RPMTAG_OBSOLETEFLAGS:
+	case RPMTAG_ORDERFLAGS:
 	    if (fc->skipReq)
 		continue;
 	    tagflags = RPMSENSE_FIND_REQUIRES;
@@ -1341,7 +1494,7 @@ static rpmRC rpmfcApplyExternal(rpmfc fc)
 	free(s);
 
 	if (rpmfcExec(dm->argv, sb_stdin, &sb_stdout,
-			failnonzero, fc->buildRoot, NULL) == -1)
+			failnonzero, fc->buildRoot) == -1)
 	    continue;
 
 	if (sb_stdout == NULL) {
@@ -1464,9 +1617,6 @@ rpmRC rpmfcGenerateDepends(const rpmSpec spec, Package pkg)
 	goto exit;
 
     /* Add per-file colors(#files) */
-    /* XXX Make sure only primary (i.e. Elf32/Elf64) colors are added. */
-    for (int i = 0; i < fc->nfiles; i++)
-	fc->fcolor[i] &= 0x0f;
     headerPutUint32(pkg->header, RPMTAG_FILECOLORS, fc->fcolor, fc->nfiles);
     
     /* Add classes(#classes) */

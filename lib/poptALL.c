@@ -24,8 +24,6 @@
 
 static int _debug = 0;
 
-extern int _rpmds_nopromote;
-
 extern int _rpm_nouserns;
 
 extern int _fsm_debug;
@@ -82,7 +80,7 @@ static int cliDefine(const char *arg, int predefine)
     char *s, *t;
     /* XXX Convert '-' in macro name to underscore, skip leading %. */
     s = t = xstrdup(arg);
-    while (*t && !risspace(*t)) {
+    while (*t && !risspace(*t) && (*t != '(')) {
 	if (*t == '-') *t = '_';
 	t++;
     }
@@ -257,9 +255,6 @@ struct poptOption rpmcliAllPoptTable[] = {
 	N_("provide more detailed output"), NULL},
  { "version", '\0', 0, NULL, POPT_SHOWVERSION,
 	N_("print the version of rpm being used"), NULL },
-
- { "promoteepoch", '\0', POPT_ARG_VAL|POPT_ARGFLAG_DOC_HIDDEN, &_rpmds_nopromote, 0,
-	NULL, NULL},
 
  { "fsmdebug", '\0', POPT_ARG_VAL|POPT_ARGFLAG_DOC_HIDDEN, &_fsm_debug, -1,
 	N_("debug payload file state machine"), NULL},

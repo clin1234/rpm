@@ -1,5 +1,6 @@
 #include "rpmsystem-py.h"
 
+#include "rpmts-py.h"
 #include "header-py.h"
 #include "spec-py.h"
 
@@ -28,17 +29,9 @@
  *
  */
 
-/* Header objects are in another module, some hoop jumping required... */
 static PyObject *makeHeader(Header h)
 {
-    PyObject *rpmmod = PyImport_ImportModuleNoBlock("rpm");
-    if (rpmmod == NULL) return NULL;
-
-    PyObject *ptr = PyCapsule_New(h, "rpm._C_Header", NULL);
-    PyObject *hdr = PyObject_CallMethod(rpmmod, "hdr", "(O)", ptr);
-    Py_XDECREF(ptr);
-    Py_XDECREF(rpmmod);
-    return hdr;
+    return hdr_Wrap(&hdr_Type, headerLink(h));
 }
 
 struct specPkgObject_s {
@@ -295,14 +288,14 @@ static PyObject *spec_new(PyTypeObject *subtype, PyObject *args, PyObject *kwds)
 
 static PyObject * spec_doBuild(specObject *self, PyObject *args, PyObject *kwds)
 {
-    char * kwlist[] = { "buildAmount", "pkgFlags", NULL };
+    char * kwlist[] = { "ts", "buildAmount", "pkgFlags", NULL };
     struct rpmBuildArguments_s ba = { 0 };
+    rpmts ts;
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "i|i:spec_doBuild",
-			kwlist, &ba.buildAmount, &ba.pkgFlags))
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "o&i|i:spec_doBuild",
+	       kwlist, rpmtsFromPyObject, &ts, &ba.buildAmount, &ba.pkgFlags))
 	return NULL;
-
-    return PyBool_FromLong(rpmSpecBuild(self->spec, &ba) == RPMRC_OK);
+    return PyBool_FromLong(rpmSpecBuild(ts, self->spec, &ba) == RPMRC_OK);
 }
 
 static struct PyMethodDef spec_methods[] = {

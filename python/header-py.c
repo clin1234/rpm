@@ -4,12 +4,14 @@
 #include <rpm/rpmtag.h>
 #include <rpm/rpmstring.h>
 #include <rpm/rpmts.h>	/* XXX rpmtsCreate/rpmtsFree */
+#include <rpm/rpmver.h>
 
 #include "header-py.h"
 #include "rpmds-py.h"
 #include "rpmfd-py.h"
 #include "rpmfi-py.h"
 #include "rpmtd-py.h"
+#include "rpmver-py.h"
 
 /** \ingroup python
  * \class Rpm
@@ -143,7 +145,7 @@ static PyObject * hdrKeyList(hdrObject * s)
 
     hi = headerInitIterator(s->h);
     while ((tag = headerNextTag(hi)) != RPMTAG_NOT_FOUND) {
-	PyObject *to = PyInt_FromLong(tag);
+	PyObject *to = PyLong_FromLong(tag);
         if (!to) {
             headerFreeIterator(hi);
             Py_DECREF(keys);
@@ -376,9 +378,6 @@ static PyObject *hdr_new(PyTypeObject *subtype, PyObject *args, PyObject *kwds)
 
     if (obj == NULL) {
 	h = headerNew();
-    } else if (PyCapsule_CheckExact(obj)) {
-	h = PyCapsule_GetPointer(obj, "rpm._C_Header");
-	headerLink(h);
     } else if (hdrObject_Check(obj)) {
 	h = headerCopy(((hdrObject*) obj)->h);
     } else if (PyBytes_Check(obj)) {
@@ -415,11 +414,19 @@ static PyObject * hdr_iternext(hdrObject *s)
     if (s->hi == NULL) s->hi = headerInitIterator(s->h);
 
     if ((tag = headerNextTag(s->hi)) != RPMTAG_NOT_FOUND) {
-	res = PyInt_FromLong(tag);
+	res = PyLong_FromLong(tag);
     } else {
 	s->hi = headerFreeIterator(s->hi);
     }
     return res;
+}
+
+PyObject * utf8FromString(const char *s)
+{
+    /* We return all strings as surrogate-escaped utf-8 */
+    if (s != NULL)
+	return PyUnicode_DecodeUTF8(s, strlen(s), "surrogateescape");
+    Py_RETURN_NONE;
 }
 
 int utf8FromPyObject(PyObject *item, PyObject **str)
@@ -442,9 +449,9 @@ int tagNumFromPyObject (PyObject *item, rpmTagVal *tagp)
     rpmTagVal tag = RPMTAG_NOT_FOUND;
     PyObject *str = NULL;
 
-    if (PyInt_Check(item)) {
+    if (PyLong_Check(item)) {
 	/* XXX we should probably validate tag numbers too */
-	tag = PyInt_AsLong(item);
+	tag = PyLong_AsLong(item);
     } else if (utf8FromPyObject(item, &str)) {
 	tag = rpmTagGetValue(PyBytes_AsString(str));
 	Py_DECREF(str);
@@ -483,7 +490,7 @@ static int validItem(rpmTagClass tclass, PyObject *item)
 
     switch (tclass) {
     case RPM_NUMERIC_CLASS:
-	rc = (PyLong_Check(item) || PyInt_Check(item));
+	rc = (PyLong_Check(item) || PyLong_Check(item));
 	break;
     case RPM_STRING_CLASS:
 	rc = (PyBytes_Check(item) || PyUnicode_Check(item));
@@ -542,20 +549,20 @@ static int hdrAppendItem(Header h, rpmTagVal tag, rpmTagType type, PyObject *ite
 	rc = headerPutBin(h, tag, val, len);
 	} break;
     case RPM_INT64_TYPE: {
-	uint64_t val = PyInt_AsUnsignedLongLongMask(item);
+	uint64_t val = PyLong_AsUnsignedLongLongMask(item);
 	rc = headerPutUint64(h, tag, &val, 1);
 	} break;
     case RPM_INT32_TYPE: {
-	uint32_t val = PyInt_AsUnsignedLongMask(item);
+	uint32_t val = PyLong_AsUnsignedLongMask(item);
 	rc = headerPutUint32(h, tag, &val, 1);
 	} break;
     case RPM_INT16_TYPE: {
-	uint16_t val = PyInt_AsUnsignedLongMask(item);
+	uint16_t val = PyLong_AsUnsignedLongMask(item);
 	rc = headerPutUint16(h, tag, &val, 1);
 	} break;
     case RPM_INT8_TYPE:
     case RPM_CHAR_TYPE: {
-	uint8_t val = PyInt_AsUnsignedLongMask(item);
+	uint8_t val = PyLong_AsUnsignedLongMask(item);
 	rc = headerPutUint8(h, tag, &val, 1);
 	} break;
     default:
@@ -883,36 +890,22 @@ PyObject * versionCompare (PyObject * self, PyObject * args, PyObject * kwds)
     return Py_BuildValue("i", rpmVersionCompare(h1->h, h2->h));
 }
 
-static int compare_values(const char *str1, const char *str2)
-{
-    if (!str1 && !str2)
-	return 0;
-    else if (str1 && !str2)
-	return 1;
-    else if (!str1 && str2)
-	return -1;
-    return rpmvercmp(str1, str2);
-}
-
 PyObject * labelCompare (PyObject * self, PyObject * args)
 {
-    const char *v1, *r1, *v2, *r2;
-    const char *e1, *e2;
-    int rc;
+    PyObject *rco = NULL;
+    rpmver rv1 = NULL;
+    rpmver rv2 = NULL;
 
-    if (!PyArg_ParseTuple(args, "(zzz)(zzz)",
-			&e1, &v1, &r1, &e2, &v2, &r2))
+    if (!PyArg_ParseTuple(args, "O&O&",
+			    verFromPyObject, &rv1, verFromPyObject, &rv2)) {
 	return NULL;
-
-    if (e1 == NULL)	e1 = "0";
-    if (e2 == NULL)	e2 = "0";
-
-    rc = compare_values(e1, e2);
-    if (!rc) {
-	rc = compare_values(v1, v2);
-	if (!rc)
-	    rc = compare_values(r1, r2);
     }
-    return Py_BuildValue("i", rc);
+
+    rco = Py_BuildValue("i", rpmverCmp(rv1, rv2));
+
+    rpmverFree(rv1);
+    rpmverFree(rv2);
+
+    return rco;
 }
 

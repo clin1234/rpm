@@ -249,7 +249,7 @@ int showVerifyPackage(QVA_t qva, rpmts ts, Header h);
 
 /**
  * Check package and header signatures.
- * @param qva		parsed query/verify options
+ * @param qva		unused
  * @param ts		transaction set
  * @param fd		package file handle
  * @param fn		package file name
@@ -340,8 +340,8 @@ void * rpmShowProgress(const void * arg,
  * Install source rpm package.
  * @param ts		transaction set
  * @param arg		source rpm file name
- * @retval *specFilePtr	(installed) spec file name
- * @retval *cookie
+ * @param[out] *specFilePtr	(installed) spec file name
+ * @param[out] *cookie
  * @return		0 on success
  */
 int rpmInstallSource(rpmts ts, const char * arg,

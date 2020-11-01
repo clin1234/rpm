@@ -7,9 +7,7 @@ AT_BANNER([RPM verification])
 AT_SETUP([dependency problems])
 AT_KEYWORDS([verify])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
-rm -rf "${TOPDIR}"
 
 runroot rpmbuild --quiet -bb \
 	--define "pkg one" \
@@ -32,7 +30,6 @@ AT_CLEANUP
 AT_SETUP([files with no problems])
 AT_KEYWORDS([verify])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
 
 runroot rpm -U --nodeps --noscripts --ignorearch --ignoreos \
@@ -48,7 +45,6 @@ AT_CLEANUP
 AT_SETUP([files with no problems in verbose mode])
 AT_KEYWORDS([verify])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
 
 runroot rpm -U --nodeps --noscripts --ignorearch --ignoreos \
@@ -67,11 +63,9 @@ AT_CLEANUP
 AT_SETUP([directory replaced with a directory symlink])
 AT_KEYWORDS([verify])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
 tf="${RPMTEST}"/opt/foo
 rm -rf "${RPMTEST}"/opt/*
-rm -rf "${TOPDIR}"
 
 runroot rpmbuild --quiet -bb \
         --define "ver 1.0" \
@@ -99,11 +93,9 @@ AT_SETUP([directory replaced with an invalid directory symlink])
 AT_KEYWORDS([verify])
 AT_XFAIL_IF([test `id -u` != 0 ])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
 tf="${RPMTEST}"/opt/foo
 rm -rf "${RPMTEST}"/opt/*
-rm -rf "${TOPDIR}"
 
 runroot rpmbuild --quiet -bb \
         --define "ver 1.0" \
@@ -130,7 +122,6 @@ AT_CLEANUP
 AT_SETUP([verify from db, with problems present])
 AT_KEYWORDS([verify])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
 
 runroot rpm -U --nodeps --noscripts --ignorearch --ignoreos \
@@ -152,7 +143,6 @@ AT_CLEANUP
 AT_SETUP([verify from package, with problems present])
 AT_KEYWORDS([verify])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
 
 runroot rpm -U --nodeps --noscripts --ignorearch --ignoreos \
@@ -173,6 +163,8 @@ AT_CLEANUP
 AT_SETUP([verify file attribute filtering])
 AT_KEYWORDS([query])
 AT_CHECK([
+RPMDB_INIT
+
 runroot rpmbuild -bb --quiet \
   /data/SPECS/vattrtest.spec
 
@@ -232,10 +224,8 @@ AT_SETUP([verifyscript failure])
 AT_KEYWORDS([verify])
 AT_CHECK([
 AT_SKIP_IF([$LUA_DISABLED])
-RPMDB_CLEAR
 RPMDB_INIT
 
-rm -rf "${TOPDIR}"
 runroot rpmbuild --quiet -bb /data/SPECS/verifyscript.spec
 runroot rpm -U --nodeps /build/RPMS/noarch/verifyscript-1.0-1.noarch.rpm
 rm -f "${RPMTEST}"/var/checkme
@@ -250,10 +240,8 @@ AT_SETUP([verifyscript success])
 AT_KEYWORDS([verify])
 AT_CHECK([
 AT_SKIP_IF([$LUA_DISABLED])
-RPMDB_CLEAR
 RPMDB_INIT
 
-rm -rf "${TOPDIR}"
 runroot rpmbuild --quiet -bb /data/SPECS/verifyscript.spec
 runroot rpm -U --nodeps /build/RPMS/noarch/verifyscript-1.0-1.noarch.rpm
 touch "${RPMTEST}"/var/checkme
@@ -269,9 +257,7 @@ AT_CLEANUP
 AT_SETUP([shared file timestamp behavior])
 AT_KEYWORDS([verify])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
-rm -rf "${TOPDIR}"
 
 # create packages sharing a file but with different timestamp
 for p in "one" "two"; do
@@ -294,15 +280,9 @@ runroot rpm -Va --nouser --nogroup
 AT_CLEANUP
 
 # ------------------------------
-# Upgraded verification with min_writes 1 (files)
-AT_SETUP([Upgraded verification with min_writes 1 (files)])
+AT_SETUP([minimize writes (files)])
 AT_KEYWORDS([upgrade verify min_writes])
-AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
-tf="${RPMTEST}"/opt/foo
-rm -rf "${tf}" "${tf}".rpm*
-rm -rf "${TOPDIR}"
 
 for v in "1.0" "2.0"; do
     runroot rpmbuild --quiet -bb \
@@ -319,6 +299,11 @@ for v in "3.0" "4.0"; do
 	--define "filedata fox" \
           /data/SPECS/replacetest.spec
 done
+
+AT_CHECK([
+RPMDB_INIT
+tf="${RPMTEST}"/opt/foo
+rm -rf "${tf}"*
 
 runroot rpm -i /build/RPMS/noarch/replacetest-1.0-1.noarch.rpm
 cat "${tf}"
@@ -362,35 +347,11 @@ fox
 fox
 ],
 [])
-AT_CLEANUP
 
-
-# ------------------------------
-# Upgraded verification with min_writes 2 (files)
-AT_SETUP([Upgraded verification with min_writes 2 (files)])
-AT_KEYWORDS([upgrade verify min_writes])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
 tf="${RPMTEST}"/opt/foo
-rm -rf "${tf}" "${tf}".rpm*
-rm -rf "${TOPDIR}"
-
-for v in "1.0" "2.0"; do
-    runroot rpmbuild --quiet -bb \
-        --define "ver $v" \
-	--define "filetype file" \
-	--define "filedata foo" \
-          /data/SPECS/replacetest.spec
-done
-
-for v in "3.0" "4.0"; do
-    runroot rpmbuild --quiet -bb \
-        --define "ver $v" \
-	--define "filetype file" \
-	--define "filedata fox" \
-          /data/SPECS/replacetest.spec
-done
+rm -rf "${tf}"*
 
 runroot rpm -i /build/RPMS/noarch/replacetest-1.0-1.noarch.rpm
 cat "${tf}"
@@ -444,22 +405,36 @@ fox
 [])
 AT_CLEANUP
 
-# ------------------------------
-# Upgraded verification with min_writes 3 (LINKs)
-AT_SETUP([Upgraded verification with min_writes 3 (LINKs)])
+AT_SETUP([minimize writes (hardlinks)])
 AT_KEYWORDS([upgrade verify min_writes])
-AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
-tf="${RPMTEST}"/opt/foo
-rm -rf "${tf}" "${tf}".rpm*
-rm -rf "${TOPDIR}"
+for v in "0" "1"; do
+    runroot rpmbuild --quiet -bb --define "ver ${v}" /data/SPECS/hlbreak.spec
+done
+AT_CHECK([
+RPMDB_INIT
+runroot rpm -U --define "_minimize_writes 1" /build/RPMS/noarch/hlbreak-0-0.noarch.rpm
+runroot rpm -Vav --nouser --nogroup
+runroot rpm -U --define "_minimize_writes 1" /build/RPMS/noarch/hlbreak-1-0.noarch.rpm
+runroot rpm -Vav --nouser --nogroup
+],
+[0],
+[.........    /opt/file2
+.........    /opt/file1
+.........    /opt/file2
+],
+)
+AT_CLEANUP
 
+
+AT_SETUP([minimize writes (symlinks)])
+AT_KEYWORDS([upgrade verify min_writes])
+RPMDB_INIT
 for v in "1.0" "2.0"; do
     runroot rpmbuild --quiet -bb \
         --define "ver $v" \
 	--define "filetype link" \
-	--define "filedata foo" \
+	--define "filedata doh" \
           /data/SPECS/replacetest.spec
 done
 
@@ -470,6 +445,11 @@ for v in "3.0" "4.0"; do
 	--define "filedata fox" \
           /data/SPECS/replacetest.spec
 done
+
+AT_CHECK([
+RPMDB_INIT
+tf="${RPMTEST}"/opt/foo
+rm -rf "${tf}"*
 
 runroot rpm -i /build/RPMS/noarch/replacetest-1.0-1.noarch.rpm
 readlink "${tf}"
@@ -502,41 +482,19 @@ runroot rpm -Va  --nouser --nogroup replacetest
 readlink "${tf}"
 ],
 [0],
-[foo
-foo
+[doh
+doh
 fox
 xx
 fox
 fox
 ],
 [])
-AT_CLEANUP
-# ------------------------------
-# Upgraded verification with min_writes 4 (LINKs)
-AT_SETUP([Upgraded verification with min_writes 4 (LINKs)])
-AT_KEYWORDS([upgrade verify min_writes])
+
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
 tf="${RPMTEST}"/opt/foo
 rm -rf "${tf}" "${tf}".rpm*
-rm -rf "${TOPDIR}"
-
-for v in "1.0" "2.0"; do
-    runroot rpmbuild --quiet -bb \
-        --define "ver $v" \
-	--define "filetype link" \
-	--define "filedata foo" \
-          /data/SPECS/replacetest.spec
-done
-
-for v in "3.0" "4.0"; do
-    runroot rpmbuild --quiet -bb \
-        --define "ver $v" \
-	--define "filetype link" \
-	--define "filedata fox" \
-          /data/SPECS/replacetest.spec
-done
 
 runroot rpm -i /build/RPMS/noarch/replacetest-1.0-1.noarch.rpm
 readlink "${tf}"
@@ -573,9 +531,9 @@ grep -c  "touch" output.txt
 readlink "${tf}"
 ],
 [0],
-[foo
+[doh
 2
-foo
+doh
 1
 fox
 xx
@@ -587,14 +545,12 @@ fox
 [])
 AT_CLEANUP
 
-AT_SETUP([Upgraded verification with min_writes 5 (suid files)])
+AT_SETUP([minimize writes (SUID files)])
 AT_KEYWORDS([upgrade verify min_writes])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
 tf="${RPMTEST}"/opt/foo
 rm -rf "${tf}" "${tf}".rpm*
-rm -rf "${TOPDIR}"
 
 for v in "1.0" "2.0"; do
     runroot rpmbuild --quiet -bb \
@@ -627,7 +583,6 @@ AT_SETUP([verify empty/no capabilities 1])
 AT_KEYWORDS([verify])
 AT_SKIP_IF([$CAP_DISABLED])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
 
 runroot rpm -U --nocaps --ignoreos \
@@ -647,7 +602,6 @@ AT_SETUP([verify empty/no capabilities 2])
 AT_KEYWORDS([verify])
 AT_SKIP_IF([$CAP_DISABLED])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
 
 runroot rpm -U --nocaps --nodeps --noscripts --ignorearch --ignoreos \

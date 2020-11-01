@@ -22,7 +22,7 @@ static int dummydb_Open(rpmdb rdb, rpmDbiTagVal rpmtag, dbiIndex * dbip, int fla
 
 static int dummydb_Verify(dbiIndex dbi, unsigned int flags)
 {
-    return 1;
+    return 0;
 }
 
 static void dummydb_SetFSync(rpmdb rdb, int enable)
@@ -31,7 +31,7 @@ static void dummydb_SetFSync(rpmdb rdb, int enable)
 
 static int dummydb_Ctrl(rpmdb rdb, dbCtrlOp ctrl)
 {
-    return 1;
+    return 0;
 }
 
 static dbiCursor dummydb_CursorInit(dbiIndex dbi, unsigned int flags)
@@ -45,12 +45,7 @@ static dbiCursor dummydb_CursorFree(dbiIndex dbi, dbiCursor dbc)
 }
 
 
-static rpmRC dummydb_pkgdbNew(dbiIndex dbi, dbiCursor dbc,  unsigned int *hdrNum)
-{
-    return RPMRC_FAIL;
-}
-
-static rpmRC dummydb_pkgdbPut(dbiIndex dbi, dbiCursor dbc,  unsigned int hdrNum, unsigned char *hdrBlob, unsigned int hdrLen)
+static rpmRC dummydb_pkgdbPut(dbiIndex dbi, dbiCursor dbc,  unsigned int *hdrNum, unsigned char *hdrBlob, unsigned int hdrLen)
 {
     return RPMRC_FAIL;
 }
@@ -75,12 +70,12 @@ static rpmRC dummydb_idxdbGet(dbiIndex dbi, dbiCursor dbc, const char *keyp, siz
     return RPMRC_FAIL;
 }
 
-static rpmRC dummydb_idxdbPut(dbiIndex dbi, dbiCursor dbc, const char *keyp, size_t keylen, dbiIndexItem rec)
+static rpmRC dummydb_idxdbPut(dbiIndex dbi, rpmTagVal rpmtag, unsigned int hdrNum, Header h)
 {
     return RPMRC_FAIL;
 }
 
-static rpmRC dummydb_idxdbDel(dbiIndex dbi, dbiCursor dbc, const char *keyp, size_t keylen, dbiIndexItem rec)
+static rpmRC dummydb_idxdbDel(dbiIndex dbi, rpmTagVal rpmtag, unsigned int hdrNum, Header h)
 {
     return RPMRC_FAIL;
 }
@@ -93,6 +88,9 @@ static const void * dummydb_idxdbKey(dbiIndex dbi, dbiCursor dbc, unsigned int *
 
 
 struct rpmdbOps_s dummydb_dbops = {
+    .name	= "dummy",
+    .path	= NULL,
+
     .open	= dummydb_Open,
     .close	= dummydb_Close,
     .verify	= dummydb_Verify,
@@ -102,7 +100,6 @@ struct rpmdbOps_s dummydb_dbops = {
     .cursorInit	= dummydb_CursorInit,
     .cursorFree	= dummydb_CursorFree,
 
-    .pkgdbNew	= dummydb_pkgdbNew,
     .pkgdbPut	= dummydb_pkgdbPut,
     .pkgdbDel	= dummydb_pkgdbDel,
     .pkgdbGet	= dummydb_pkgdbGet,

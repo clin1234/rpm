@@ -7,6 +7,8 @@
 
 #include <errno.h>
 #include <sys/wait.h>
+#include <netdb.h>
+#include <time.h>
 
 #include <rpm/rpmlog.h>
 #include <rpm/rpmfileutil.h>
@@ -15,6 +17,50 @@
 #include "lib/rpmug.h"
 
 #include "debug.h"
+
+static rpm_time_t getBuildTime(void)
+{
+    rpm_time_t buildTime = 0;
+    char *srcdate;
+    time_t epoch;
+    char *endptr;
+
+    srcdate = getenv("SOURCE_DATE_EPOCH");
+    if (srcdate && rpmExpandNumeric("%{?use_source_date_epoch_as_buildtime}")) {
+        errno = 0;
+        epoch = strtol(srcdate, &endptr, 10);
+        if (srcdate == endptr || *endptr || errno != 0)
+            rpmlog(RPMLOG_ERR, _("unable to parse SOURCE_DATE_EPOCH\n"));
+        else
+            buildTime = (int32_t) epoch;
+    } else
+        buildTime = (int32_t) time(NULL);
+
+    return buildTime;
+}
+
+static char * buildHost(void)
+{
+    char* hostname;
+    struct hostent *hbn;
+    char *bhMacro;
+
+    bhMacro = rpmExpand("%{?_buildhost}", NULL);
+    if (strcmp(bhMacro, "") != 0) {
+        rasprintf(&hostname, "%s", bhMacro);
+    } else {
+        hostname = rcalloc(1024, sizeof(*hostname));
+        (void) gethostname(hostname, 1024);
+        hbn = gethostbyname(hostname);
+        if (hbn)
+            strcpy(hostname, hbn->h_name);
+        else
+            rpmlog(RPMLOG_WARNING,
+                    _("Could not canonicalize hostname: %s\n"), hostname);
+    }
+    free(bhMacro);
+    return(hostname);
+}
 
 /**
  */
@@ -40,14 +86,14 @@ static rpmRC doRmSource(rpmSpec spec)
 	}
     }
 exit:
-    return !rc ? RPMRC_OK : RPMRC_FAIL;
+    return !rc ? 0 : 1;
 }
 
 /*
  * @todo Single use by %%doc in files.c prevents static.
  */
 rpmRC doScript(rpmSpec spec, rpmBuildFlags what, const char *name,
-		const char *sb, int test)
+	       const char *sb, int test, StringBuf * sb_stdoutp)
 {
     char *scriptName = NULL;
     char * buildDir = rpmGenPath(spec->rootDir, "%{_builddir}", "");
@@ -69,6 +115,11 @@ rpmRC doScript(rpmSpec spec, rpmBuildFlags what, const char *name,
 	mTemplate = "%{__spec_prep_template}";
 	mPost = "%{__spec_prep_post}";
 	mCmd = "%{__spec_prep_cmd}";
+	break;
+    case RPMBUILD_BUILDREQUIRES:
+	mTemplate = "%{__spec_buildrequires_template}";
+	mPost = "%{__spec_buildrequires_post}";
+	mCmd = "%{__spec_buildrequires_cmd}";
 	break;
     case RPMBUILD_BUILD:
 	mTemplate = "%{__spec_build_template}";
@@ -149,9 +200,10 @@ rpmRC doScript(rpmSpec spec, rpmBuildFlags what, const char *name,
     (void) poptParseArgvString(buildCmd, &argc, &argv);
 
     rpmlog(RPMLOG_NOTICE, _("Executing(%s): %s\n"), name, buildCmd);
-    if (rpmfcExec((ARGV_const_t)argv, NULL, NULL, 1, spec->buildSubdir, stdout)) {
-	rpmlog(RPMLOG_ERR, _("Exec of %s failed (%s): %s\n"),
-		scriptName, name, strerror(errno));
+    if (rpmfcExec((ARGV_const_t)argv, NULL, sb_stdoutp, 1,
+		  spec->buildSubdir)) {
+	rpmlog(RPMLOG_ERR, _("Bad exit status from %s (%s)\n"),
+		scriptName, name);
 	goto exit;
     }
     rc = RPMRC_OK;
@@ -172,11 +224,69 @@ exit:
     return rc;
 }
 
-static rpmRC buildSpec(BTA_t buildArgs, rpmSpec spec, int what)
+static int doBuildRequires(rpmSpec spec, int test)
+{
+    StringBuf sb_stdout = NULL;
+    int outc;
+    ARGV_t output = NULL;
+
+    int rc = 1; /* assume failure */
+
+    if (!spec->buildrequires) {
+	rc = RPMRC_OK;
+	goto exit;
+    }
+
+    if ((rc = doScript(spec, RPMBUILD_BUILDREQUIRES, "%generate_buildrequires",
+		       getStringBuf(spec->buildrequires), test, &sb_stdout)))
+	goto exit;
+
+    /* add results to requires of the srpm */
+    argvSplit(&output, getStringBuf(sb_stdout), "\n\r");
+    outc = argvCount(output);
+
+    for (int i = 0; i < outc; i++) {
+	if (parseRCPOT(spec, spec->sourcePackage, output[i], RPMTAG_REQUIRENAME,
+		       0, RPMSENSE_FIND_REQUIRES, addReqProvPkg, NULL))
+	    goto exit;
+    }
+
+    rpmdsPutToHeader(
+	*packageDependencies(spec->sourcePackage, RPMTAG_REQUIRENAME),
+	spec->sourcePackage->header);
+
+    rc = RPMRC_MISSINGBUILDREQUIRES;
+
+ exit:
+    freeStringBuf(sb_stdout);
+    free(output);
+    return rc;
+}
+
+static rpmRC doCheckBuildRequires(rpmts ts, rpmSpec spec, int test)
 {
     rpmRC rc = RPMRC_OK;
+    rpmps ps = rpmSpecCheckDeps(ts, spec);
+
+    if (ps) {
+	rpmlog(RPMLOG_ERR, _("Failed build dependencies:\n"));
+	rpmpsPrint(NULL, ps);
+	rc = RPMRC_MISSINGBUILDREQUIRES;
+    }
+
+    rpmpsFree(ps);
+    return rc;
+}
+
+static rpmRC buildSpec(rpmts ts, BTA_t buildArgs, rpmSpec spec, int what)
+{
+    rpmRC rc = RPMRC_OK;
+    int missing_buildreqs = 0;
     int test = (what & RPMBUILD_NOBUILD);
     char *cookie = buildArgs->cookie ? xstrdup(buildArgs->cookie) : NULL;
+    /* handle quiet mode by capturing the output into a sink buffer */
+    StringBuf sink = NULL;
+    StringBuf *sbp = rpmIsVerbose() ? NULL : &sink;
 
     if (rpmExpandNumeric("%{?source_date_epoch_from_changelog}") &&
 	getenv("SOURCE_DATE_EPOCH") == NULL) {
@@ -196,6 +306,9 @@ static rpmRC buildSpec(BTA_t buildArgs, rpmSpec spec, int what)
 	}
     }
 
+    spec->buildTime = getBuildTime();
+    spec->buildHost = buildHost();
+
     /* XXX TODO: rootDir is only relevant during build, eliminate from spec */
     spec->rootDir = buildArgs->rootdir;
     if (!spec->recursing && spec->BACount) {
@@ -204,7 +317,7 @@ static rpmRC buildSpec(BTA_t buildArgs, rpmSpec spec, int what)
 	/* packaging on the first run, and skip RMSOURCE altogether */
 	if (spec->BASpecs != NULL)
 	for (x = 0; x < spec->BACount; x++) {
-	    if ((rc = buildSpec(buildArgs, spec->BASpecs[x],
+	    if ((rc = buildSpec(ts, buildArgs, spec->BASpecs[x],
 				(what & ~RPMBUILD_RMSOURCE) |
 				(x ? 0 : (what & RPMBUILD_PACKAGESOURCE))))) {
 		goto exit;
@@ -212,25 +325,61 @@ static rpmRC buildSpec(BTA_t buildArgs, rpmSpec spec, int what)
 	}
     } else {
 	int didBuild = (what & (RPMBUILD_PREP|RPMBUILD_BUILD|RPMBUILD_INSTALL));
+	int sourceOnly = ((what & RPMBUILD_PACKAGESOURCE) &&
+	   !(what & (RPMBUILD_BUILD|RPMBUILD_INSTALL|RPMBUILD_PACKAGEBINARY)));
+
+	if (!spec->buildrequires && sourceOnly) {
+		/* don't run prep if not needed for source build */
+		/* with(out) dynamic build requires*/
+	    what &= ~(RPMBUILD_PREP);
+	}
+
+	if ((what & RPMBUILD_CHECKBUILDREQUIRES) &&
+	    (rc = doCheckBuildRequires(ts, spec, test)))
+		goto exit;
 
 	if ((what & RPMBUILD_PREP) &&
 	    (rc = doScript(spec, RPMBUILD_PREP, "%prep",
-			   getStringBuf(spec->prep), test)))
+			   getStringBuf(spec->prep), test, sbp)))
 		goto exit;
+
+	if (what & RPMBUILD_BUILDREQUIRES)
+            rc = doBuildRequires(spec, test);
+	if ((what & RPMBUILD_CHECKBUILDREQUIRES) &&
+	        (rc == RPMRC_MISSINGBUILDREQUIRES))
+	    rc = doCheckBuildRequires(ts, spec, test);
+	if (rc == RPMRC_MISSINGBUILDREQUIRES) {
+	    if ((what & RPMBUILD_DUMPBUILDREQUIRES) &&
+		!(spec->flags & RPMSPEC_FORCE)) {
+		/* Create buildreqs package */
+		char *nvr = headerGetAsString(spec->packages->header, RPMTAG_NVR);
+		rasprintf(&spec->sourceRpmName, "%s.buildreqs.nosrc.rpm", nvr);
+		free(nvr);
+		/* free sources to not include them in the buildreqs package */
+		spec->sources = freeSources(spec->sources);
+		spec->numSources = 0;
+		missing_buildreqs = 1;
+		what = RPMBUILD_PACKAGESOURCE;
+	    } else {
+		rc = RPMRC_OK;
+	    }
+	} else if (rc) {
+	    goto exit;
+	}
 
 	if ((what & RPMBUILD_BUILD) &&
 	    (rc = doScript(spec, RPMBUILD_BUILD, "%build",
-			   getStringBuf(spec->build), test)))
+			   getStringBuf(spec->build), test, sbp)))
 		goto exit;
 
 	if ((what & RPMBUILD_INSTALL) &&
 	    (rc = doScript(spec, RPMBUILD_INSTALL, "%install",
-			   getStringBuf(spec->install), test)))
+			   getStringBuf(spec->install), test, sbp)))
 		goto exit;
 
 	if ((what & RPMBUILD_CHECK) &&
 	    (rc = doScript(spec, RPMBUILD_CHECK, "%check",
-			   getStringBuf(spec->check), test)))
+			   getStringBuf(spec->check), test, sbp)))
 		goto exit;
 
 	if ((what & RPMBUILD_PACKAGESOURCE) &&
@@ -257,11 +406,11 @@ static rpmRC buildSpec(BTA_t buildArgs, rpmSpec spec, int what)
 	
 	if ((what & RPMBUILD_CLEAN) &&
 	    (rc = doScript(spec, RPMBUILD_CLEAN, "%clean",
-			   getStringBuf(spec->clean), test)))
+			   getStringBuf(spec->clean), test, sbp)))
 		goto exit;
 
 	if ((what & RPMBUILD_RMBUILD) &&
-	    (rc = doScript(spec, RPMBUILD_RMBUILD, "--clean", NULL, test)))
+	    (rc = doScript(spec, RPMBUILD_RMBUILD, "--clean", NULL, test, sbp)))
 		goto exit;
     }
 
@@ -272,19 +421,26 @@ static rpmRC buildSpec(BTA_t buildArgs, rpmSpec spec, int what)
 	(void) unlink(spec->specFile);
 
 exit:
+    freeStringBuf(sink);
     free(cookie);
     spec->rootDir = NULL;
-    if (rc != RPMRC_OK && rpmlogGetNrecs() > 0) {
+    if (rc != RPMRC_OK && rc != RPMRC_MISSINGBUILDREQUIRES &&
+	    rpmlogGetNrecs() > 0) {
 	rpmlog(RPMLOG_NOTICE, _("\n\nRPM build errors:\n"));
 	rpmlogPrint(NULL);
     }
     rpmugFree();
-
+    if (missing_buildreqs && !rc) {
+	rc = RPMRC_MISSINGBUILDREQUIRES;
+    }
+    if (rc == RPMRC_FAIL) {
+	rc = 1;
+    }
     return rc;
 }
 
-rpmRC rpmSpecBuild(rpmSpec spec, BTA_t buildArgs)
+int rpmSpecBuild(rpmts ts, rpmSpec spec, BTA_t buildArgs)
 {
     /* buildSpec() can recurse with different buildAmount, pass it separately */
-    return buildSpec(buildArgs, spec, buildArgs->buildAmount);
+    return buildSpec(ts, buildArgs, spec, buildArgs->buildAmount);
 }

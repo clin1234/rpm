@@ -36,13 +36,13 @@ static char *signFile(const char *algo, const uint8_t *fdigest, int diglen,
 const char *key, char *keypass, uint32_t *siglenp)
 {
     char *fsignature;
-    unsigned char digest[diglen];
+    unsigned char zeros[diglen];
     unsigned char signature[MAX_SIGNATURE_LENGTH];
     int siglen;
 
     /* some entries don't have a digest - we return an empty signature */
-    memset(digest, 0, diglen);
-    if (memcmp(digest, fdigest, diglen) == 0)
+    memset(zeros, 0, diglen);
+    if (memcmp(zeros, fdigest, diglen) == 0)
         return strdup("");
 
     /* prepare file signature */
@@ -50,7 +50,7 @@ const char *key, char *keypass, uint32_t *siglenp)
     signature[0] = '\x03';
 
     /* calculate file signature */
-    siglen = sign_hash(algo, digest, diglen, key, keypass, signature+1);
+    siglen = sign_hash(algo, fdigest, diglen, key, keypass, signature+1);
     if (siglen < 0) {
 	rpmlog(RPMLOG_ERR, _("sign_hash failed\n"));
 	return NULL;

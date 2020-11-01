@@ -9,8 +9,11 @@ rpmsign \- RPM Package Signing
 
 \fBrpm\fR \fB--delsign\fR \fB\fIPACKAGE_FILE\fB\fR\fI ...\fR
 
+\fBrpm\fR \fB--delfilesign\fR \fB\fIPACKAGE_FILE\fB\fR\fI ...\fR
+
 .SS "rpmsign-options"
 .PP
+[\fb--rpmv3\fR]
 [\fb--fskpath \fIKEY\fb\fR] [\fB--signfiles\fR]
 
 .SH DESCRIPTION
@@ -21,16 +24,39 @@ options generate and insert new signatures for each package
 existing signatures. There are two options for historical reasons,
 there is no difference in behavior currently.
 
+To create a signature rpm needs to verify the package's checksum. As a result
+packages with a MD5/SHA1 checksums cannot be signed in FIPS mode.
+
 \fBrpm\fR \fB--delsign\fR \fB\fIPACKAGE_FILE\fB\fR\fI ...\fR
 
 .PP
 Delete all signatures from each package \fIPACKAGE_FILE\fR given.
 
+\fBrpm\fR \fB--delfilesign\fR \fB\fIPACKAGE_FILE\fB\fR\fI ...\fR
+
+.PP
+Delete all IMA and fsverity file signatures from each package
+\fIPACKAGE_FILE\fR given.
+
 .SS "SIGN OPTIONS"
 .PP
 .TP
+\fB--rpmv3\fR
+Force RPM V3 header+payload signature addition.
+These are expensive and redundant baggage on packages where a separate
+payload digest exists (packages built with rpm >= 4.14).  Rpm will
+automatically detect the need for V3 signatures, but this option can be
+used to force their creation if the packages must be fully 
+signature verifiable with rpm < 4.14 or other interoperability reasons.
+.TP
 \fB--fskpath \fIKEY\fB\fR
 Used with \fB--signfiles\fR, use file signing key \fIKey\fR.
+.TP
+\fB--certpath \fICERT\fB\fR
+Used with \fB--signverity\fR, use file signing certificate \fICert\fR.
+.TP
+\fB--verityalgo \fIALG\fB\fR
+Used with \fB--signverity\fR, to specify the signing algorithm. sha256 and sha512 are supported, with sha256 being the default if this argument is not specified. This can also be specified with the macro %_verity_algorithm
 .TP
 \fB--signfiles\fR
 Sign package files. The macro \fB%_binary_filedigest_algorithm\fR must
@@ -38,6 +64,14 @@ be set to a supported algorithm before building the package. The
 supported algorithms are SHA1, SHA256, SHA384, and SHA512, which are
 represented as 2, 8, 9, and 10 respectively.  The file signing key (RSA
 private key) must be set before signing the package, it can be configured on the command line with \fB--fskpath\fR or the macro %_file_signing_key.
+.TP
+\fB--signverity\fR
+Sign package files with fsverity signatures. The file signing key (RSA
+private key) and the signing certificate must be set before signing
+the package. The key can be configured on the command line with
+\fB--fskpath\fR or the macro %_file_signing_key, and the cert can be
+configured on the command line with \fB--certpath\fR or the macro
+%_file_signing_cert.
 
 .SS "USING GPG TO SIGN PACKAGES"
 .PP
@@ -98,4 +132,5 @@ Jeff Johnson <jbj@redhat.com>
 Erik Troan <ewt@redhat.com>
 Panu Matilainen <pmatilai@redhat.com>
 Fionnuala Gunter <fin@linux.vnet.ibm.com>
+Jes Sorensen <jsorensen@fb.com>
 .fi

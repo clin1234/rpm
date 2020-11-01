@@ -7,9 +7,7 @@ AT_BANNER([RPM signatures and digests])
 AT_SETUP([rpmkeys -Kv <unsigned> 1])
 AT_KEYWORDS([rpmkeys digest])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
-rm -rf "${TOPDIR}"
 
 runroot rpmkeys -Kv /data/RPMS/hello-2.0-1.x86_64.rpm /data/RPMS/hello-1.0-1.i386.rpm
 ],
@@ -26,14 +24,38 @@ runroot rpmkeys -Kv /data/RPMS/hello-2.0-1.x86_64.rpm /data/RPMS/hello-1.0-1.i38
 [])
 AT_CLEANUP
 
+AT_SETUP([rpmkeys -Kv <reconstructed> 1])
+AT_KEYWORDS([rpmkeys digest])
+AT_CHECK([
+RPMDB_INIT
+
+cp "${RPMTEST}"/data/misc/hello.intro "${RPMTEST}"/data/misc/hello.payload .
+gzip -cd < hello.payload > hello.uc-payload
+cat hello.intro hello.payload > "${RPMTEST}"/tmp/hello-c.rpm
+cat hello.intro hello.uc-payload > "${RPMTEST}"/tmp/hello-uc.rpm
+runroot rpmkeys -Kv /tmp/hello-c.rpm /tmp/hello-uc.rpm
+],
+[1],
+[/tmp/hello-c.rpm:
+    Header SHA256 digest: OK
+    Header SHA1 digest: OK
+    Payload SHA256 digest: OK
+    MD5 digest: OK
+/tmp/hello-uc.rpm:
+    Header SHA256 digest: OK
+    Header SHA1 digest: OK
+    Payload SHA256 ALT digest: OK
+    MD5 digest: BAD (Expected 055607c4dee6464b9415ae726e7d81a7 != 839d24c30e5188e0b83599fbe3865919)
+],
+[])
+AT_CLEANUP
+
 # ------------------------------
 # Test corrupted package verification (corrupted signature)
 AT_SETUP([rpmkeys -Kv <corrupted unsigned> 1])
 AT_KEYWORDS([rpmkeys digest])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
-rm -rf "${TOPDIR}"
 
 pkg="hello-2.0-1.x86_64.rpm"
 cp "${RPMTEST}"/data/RPMS/${pkg} "${RPMTEST}"/tmp/${pkg}
@@ -56,9 +78,7 @@ AT_CLEANUP
 AT_SETUP([rpmkeys -Kv <corrupted unsigned> 2])
 AT_KEYWORDS([rpmkeys digest])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
-rm -rf "${TOPDIR}"
 
 pkg="hello-2.0-1.x86_64.rpm"
 cp "${RPMTEST}"/data/RPMS/${pkg} "${RPMTEST}"/tmp/${pkg}
@@ -81,9 +101,7 @@ AT_CLEANUP
 AT_SETUP([rpmkeys -Kv <corrupted unsigned> 3])
 AT_KEYWORDS([rpmkeys digest])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
-rm -rf "${TOPDIR}"
 
 pkg="hello-2.0-1.x86_64.rpm"
 cp "${RPMTEST}"/data/RPMS/${pkg} "${RPMTEST}"/tmp/${pkg}
@@ -96,6 +114,7 @@ runroot rpmkeys -Kv /tmp/${pkg}
     Header SHA256 digest: OK
     Header SHA1 digest: OK
     Payload SHA256 digest: BAD (Expected 84a7338287bf19715c4eed0243f5cdb447eeb0ade37b2af718d4060aefca2f7c != bea903609dceac36e1f26a983c493c98064d320fdfeb423034ed63d649b2c8dc)
+    Payload SHA256 ALT digest: NOTFOUND
     MD5 digest: BAD (Expected 137ca1d8b35cca02a1854ba301c5432e != d662cd0d81601a7107312684ad1ddf38)
 ],
 [])
@@ -106,9 +125,7 @@ AT_CLEANUP
 AT_SETUP([rpmkeys -Kv <corrupted unsigned> 4])
 AT_KEYWORDS([rpmkeys digest])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
-rm -rf "${TOPDIR}"
 
 pkg="hello-2.0-1.x86_64.rpm"
 cp "${RPMTEST}"/data/RPMS/${pkg} "${RPMTEST}"/tmp/${pkg}
@@ -127,24 +144,32 @@ AT_CLEANUP
 AT_SETUP([rpmkeys -Kv <unsigned> 2])
 AT_KEYWORDS([rpmkeys digest])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
-rm -rf "${TOPDIR}"
 
 runroot rpmbuild -bb --quiet \
 	--define "%optflags -O2 -g" \
 	--define "%_target_platform noarch-linux" \
 	--define "%_binary_payload w.ufdio" \
 	--define "%_buildhost localhost" \
+	--define "%use_source_date_epoch_as_buildtime 1" \
 	--define "%source_date_epoch_from_changelog 1" \
 	--define "%clamp_mtime_to_source_date_epoch 1" \
 	/data/SPECS/attrtest.spec 
+for v in SHA256HEADER SHA1HEADER SIGMD5 PAYLOADDIGEST PAYLOADDIGESTALT; do
+    runroot rpm -q --qf "${v}: %{${v}}\n" /build/RPMS/noarch/attrtest-1.0-1.noarch.rpm
+done
 runroot rpmkeys -Kv /build/RPMS/noarch/attrtest-1.0-1.noarch.rpm
 ],
 [0],
-[/build/RPMS/noarch/attrtest-1.0-1.noarch.rpm:
+[SHA256HEADER: 8257777b3c09ad7cefce087af2437e9d711063677fe49c60811c30fbf1f2f779
+SHA1HEADER: cc3d3a91b32587f0afd4935ca0d7e38cc71221f5
+SIGMD5: 0c21d2620a279b07c69d4d6171568d98
+PAYLOADDIGEST: 749d8980cc5889419da8cdbe9a5b3292742af8a227db3635f84966481b7612a8
+PAYLOADDIGESTALT: 749d8980cc5889419da8cdbe9a5b3292742af8a227db3635f84966481b7612a8
+/build/RPMS/noarch/attrtest-1.0-1.noarch.rpm:
     Header SHA256 digest: OK
     Header SHA1 digest: OK
+    Payload SHA256 ALT digest: OK
     Payload SHA256 digest: OK
     MD5 digest: OK
 ],
@@ -156,9 +181,7 @@ AT_CLEANUP
 AT_SETUP([rpmkeys --import rsa])
 AT_KEYWORDS([rpmkeys import])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
-rm -rf "${TOPDIR}"
 
 runroot rpmkeys --import /data/keys/rpm.org-rsa-2048-test.pub
 runroot rpm -qi gpg-pubkey-1964c5fc-58e63918|grep -v Date|grep -v Version:
@@ -222,9 +245,7 @@ AT_CLEANUP
 AT_SETUP([rpmkeys -K <signed> 1])
 AT_KEYWORDS([rpmkeys digest signature])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
-rm -rf "${TOPDIR}"
 
 runroot rpmkeys -K /data/RPMS/hello-2.0-1.x86_64-signed.rpm
 runroot rpmkeys --import /data/keys/rpm.org-rsa-2048-test.pub
@@ -242,9 +263,7 @@ AT_CLEANUP
 AT_SETUP([rpmkeys -Kv <signed> 1])
 AT_KEYWORDS([rpmkeys digest signature])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
-rm -rf "${TOPDIR}"
 
 runroot rpmkeys -Kv /data/RPMS/hello-2.0-1.x86_64-signed.rpm; echo $?
 runroot rpmkeys --import /data/keys/rpm.org-rsa-2048-test.pub; echo $?
@@ -289,9 +308,7 @@ AT_CLEANUP
 AT_SETUP([rpmkeys -Kv <corrupted signed> 1])
 AT_KEYWORDS([rpmkeys digest signature])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
-rm -rf "${TOPDIR}"
 
 pkg="hello-2.0-1.x86_64-signed.rpm"
 cp "${RPMTEST}"/data/RPMS/${pkg} "${RPMTEST}"/tmp/${pkg}
@@ -325,9 +342,7 @@ AT_CLEANUP
 AT_SETUP([rpmkeys -Kv <corrupted signed> 2])
 AT_KEYWORDS([rpmkeys digest signature])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
-rm -rf "${TOPDIR}"
 
 pkg="hello-2.0-1.x86_64-signed.rpm"
 cp "${RPMTEST}"/data/RPMS/${pkg} "${RPMTEST}"/tmp/${pkg}
@@ -362,9 +377,7 @@ AT_CLEANUP
 AT_SETUP([rpmkeys -Kv <corrupted signed> 3])
 AT_KEYWORDS([rpmkeys digest signature])
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
-rm -rf "${TOPDIR}"
 
 pkg="hello-2.0-1.x86_64-signed.rpm"
 cp "${RPMTEST}"/data/RPMS/${pkg} "${RPMTEST}"/tmp/${pkg}
@@ -381,6 +394,7 @@ runroot rpmkeys -Kv /tmp/${pkg}
     Header SHA256 digest: OK
     Header SHA1 digest: OK
     Payload SHA256 digest: BAD (Expected 84a7338287bf19715c4eed0243f5cdb447eeb0ade37b2af718d4060aefca2f7c != bea903609dceac36e1f26a983c493c98064d320fdfeb423034ed63d649b2c8dc)
+    Payload SHA256 ALT digest: NOTFOUND
     V4 RSA/SHA256 Signature, key ID 1964c5fc: BAD
     MD5 digest: BAD (Expected 137ca1d8b35cca02a1854ba301c5432e != d662cd0d81601a7107312684ad1ddf38)
 /tmp/hello-2.0-1.x86_64-signed.rpm:
@@ -388,6 +402,7 @@ runroot rpmkeys -Kv /tmp/${pkg}
     Header SHA256 digest: OK
     Header SHA1 digest: OK
     Payload SHA256 digest: BAD (Expected 84a7338287bf19715c4eed0243f5cdb447eeb0ade37b2af718d4060aefca2f7c != bea903609dceac36e1f26a983c493c98064d320fdfeb423034ed63d649b2c8dc)
+    Payload SHA256 ALT digest: NOTFOUND
     V4 RSA/SHA256 Signature, key ID 1964c5fc: BAD
     MD5 digest: BAD (Expected 137ca1d8b35cca02a1854ba301c5432e != d662cd0d81601a7107312684ad1ddf38)
 ],
@@ -396,15 +411,19 @@ AT_CLEANUP
 
 # ------------------------------
 # Test --addsign
-AT_SETUP([rpmsign --addsign <unsigned>])
+AT_SETUP([rpmsign --addsign])
 AT_KEYWORDS([rpmsign signature])
-AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
-rm -rf "${TOPDIR}"
+gpg2 --import ${RPMTEST}/data/keys/*.secret
+# Our keys have no passphrases to be asked, silence GPG_TTY warning
+export GPG_TTY=""
+
+# rpmsign --addsign --rpmv3 <unsigned>
+AT_CHECK([
+RPMDB_INIT
 
 cp "${RPMTEST}"/data/RPMS/hello-2.0-1.x86_64.rpm "${RPMTEST}"/tmp/
-run rpmsign --key-id 1964C5FC --addsign "${RPMTEST}"/tmp/hello-2.0-1.x86_64.rpm > /dev/null
+run rpmsign --key-id 1964C5FC --rpmv3 --addsign "${RPMTEST}"/tmp/hello-2.0-1.x86_64.rpm > /dev/null
 echo PRE-IMPORT
 runroot rpmkeys -Kv /tmp/hello-2.0-1.x86_64.rpm|grep -v digest
 echo POST-IMPORT
@@ -427,43 +446,37 @@ POST-DELSIGN
 /tmp/hello-2.0-1.x86_64.rpm:
 ],
 [])
-AT_CLEANUP
 
-# ------------------------------
-# Test --delsign
-AT_SETUP([rpmsign --delsign <package>])
-AT_KEYWORDS([rpmsign signature])
+# rpmsign --addsign <unsigned>
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
-rm -rf "${TOPDIR}"
 
-cp "${RPMTEST}"/data/RPMS/hello-2.0-1.x86_64-signed.rpm "${RPMTEST}"/tmp/
-echo PRE-DELSIGN
-runroot rpmkeys -Kv /tmp/hello-2.0-1.x86_64-signed.rpm|grep -v digest
+cp "${RPMTEST}"/data/RPMS/hello-2.0-1.x86_64.rpm "${RPMTEST}"/tmp/
+run rpmsign --key-id 1964C5FC --addsign "${RPMTEST}"/tmp/hello-2.0-1.x86_64.rpm > /dev/null
+echo PRE-IMPORT
+runroot rpmkeys -Kv /tmp/hello-2.0-1.x86_64.rpm|grep -v digest
+echo POST-IMPORT
+runroot rpmkeys --import /data/keys/rpm.org-rsa-2048-test.pub
+runroot rpmkeys -Kv /tmp/hello-2.0-1.x86_64.rpm|grep -v digest
+run rpmsign --delsign "${RPMTEST}"/tmp/hello-2.0-1.x86_64.rpm > /dev/null
 echo POST-DELSIGN
-run rpmsign --delsign "${RPMTEST}"/tmp/hello-2.0-1.x86_64-signed.rpm > /dev/null
-runroot rpmkeys -Kv /tmp/hello-2.0-1.x86_64-signed.rpm|grep -v digest
+runroot rpmkeys -Kv /tmp/hello-2.0-1.x86_64.rpm|grep -v digest
 ],
 [0],
-[PRE-DELSIGN
-/tmp/hello-2.0-1.x86_64-signed.rpm:
+[PRE-IMPORT
+/tmp/hello-2.0-1.x86_64.rpm:
     Header V4 RSA/SHA256 Signature, key ID 1964c5fc: NOKEY
-    V4 RSA/SHA256 Signature, key ID 1964c5fc: NOKEY
+POST-IMPORT
+/tmp/hello-2.0-1.x86_64.rpm:
+    Header V4 RSA/SHA256 Signature, key ID 1964c5fc: OK
 POST-DELSIGN
-/tmp/hello-2.0-1.x86_64-signed.rpm:
+/tmp/hello-2.0-1.x86_64.rpm:
 ],
 [])
-AT_CLEANUP
 
-# ------------------------------
-# Test --addsign
-AT_SETUP([rpmsign --addsign <signed>])
-AT_KEYWORDS([rpmsign signature])
+# rpmsign --addsign <signed>
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
-rm -rf "${TOPDIR}"
 
 cp "${RPMTEST}"/data/RPMS/hello-2.0-1.x86_64-signed.rpm "${RPMTEST}"/tmp/
 run rpmsign --key-id 1964C5FC --addsign "${RPMTEST}"/tmp/hello-2.0-1.x86_64-signed.rpm 2>&1 |grep -q "already contains identical signature, skipping"
@@ -471,14 +484,10 @@ run rpmsign --key-id 1964C5FC --addsign "${RPMTEST}"/tmp/hello-2.0-1.x86_64-sign
 [0],
 [],
 [])
-AT_CLEANUP
 
-AT_SETUP([rpmsign --addsign <corrupted>])
-AT_KEYWORDS([rpmsign signature])
+# rpmsign --addsign <corrupted>
 AT_CHECK([
-RPMDB_CLEAR
 RPMDB_INIT
-rm -rf "${TOPDIR}"
 
 pkg="hello-2.0-1.x86_64.rpm"
 cp "${RPMTEST}"/data/RPMS/${pkg} "${RPMTEST}"/tmp/${pkg}
@@ -499,6 +508,32 @@ echo $?
     Payload SHA256 digest: OK
     MD5 digest: BAD (Expected 007ca1d8b35cca02a1854ba301c5432e != 137ca1d8b35cca02a1854ba301c5432e)
 1
+],
+[])
+gpgconf --kill gpg-agent
+AT_CLEANUP
+
+# ------------------------------
+# Test --delsign
+AT_SETUP([rpmsign --delsign])
+AT_KEYWORDS([rpmsign signature])
+AT_CHECK([
+RPMDB_INIT
+
+cp "${RPMTEST}"/data/RPMS/hello-2.0-1.x86_64-signed.rpm "${RPMTEST}"/tmp/
+echo PRE-DELSIGN
+runroot rpmkeys -Kv /tmp/hello-2.0-1.x86_64-signed.rpm|grep -v digest
+echo POST-DELSIGN
+run rpmsign --delsign "${RPMTEST}"/tmp/hello-2.0-1.x86_64-signed.rpm > /dev/null
+runroot rpmkeys -Kv /tmp/hello-2.0-1.x86_64-signed.rpm|grep -v digest
+],
+[0],
+[PRE-DELSIGN
+/tmp/hello-2.0-1.x86_64-signed.rpm:
+    Header V4 RSA/SHA256 Signature, key ID 1964c5fc: NOKEY
+    V4 RSA/SHA256 Signature, key ID 1964c5fc: NOKEY
+POST-DELSIGN
+/tmp/hello-2.0-1.x86_64-signed.rpm:
 ],
 [])
 AT_CLEANUP

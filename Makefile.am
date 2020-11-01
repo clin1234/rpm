@@ -2,14 +2,27 @@
 
 ACLOCAL_AMFLAGS = -I m4
 
-DISTCHECK_CONFIGURE_FLAGS = --enable-python
+DISTCHECK_CONFIGURE_FLAGS = \
+	--enable-python \
+	--enable-bdb \
+	--enable-ndb \
+	--enable-zstd \
+	--with-cap \
+	--with-acl \
+	--with-archive \
+	--with-lua \
+	--with-audit \
+	--with-selinux \
+	--with-imaevm \
+	--with-fsverity \
+	--disable-dependency-tracking
 
 include $(top_srcdir)/rpm.am
 AM_CFLAGS = @RPMCFLAGS@
 
 CLEANFILES =
 EXTRA_DIST = ChangeLog CREDITS INSTALL \
-	autogen.sh db3/configure installplatform platform.in
+	autogen.sh db3/configure installplatform platform.in build-aux
 BUILT_SOURCES =
 
 SUBDIRS = po misc
@@ -41,8 +54,6 @@ AM_CPPFLAGS = -I$(top_builddir) -I$(top_srcdir) -I$(top_builddir)/include/
 AM_CPPFLAGS += -I$(top_srcdir)/build
 AM_CPPFLAGS += -I$(top_srcdir)/lib
 AM_CPPFLAGS += -I$(top_srcdir)/rpmio
-AM_CPPFLAGS += @WITH_BEECRYPT_INCLUDE@
-AM_CPPFLAGS += @WITH_NSS_INCLUDE@
 AM_CPPFLAGS += @WITH_OPENSSL_INCLUDE@
 AM_CPPFLAGS += @WITH_POPT_INCLUDE@
 AM_CPPFLAGS += -I$(top_srcdir)/misc
@@ -66,6 +77,7 @@ pkginclude_HEADERS += rpmio/rpmfileutil.h
 pkginclude_HEADERS += rpmio/rpmutil.h
 pkginclude_HEADERS += rpmio/rpmkeyring.h
 pkginclude_HEADERS += rpmio/rpmbase64.h
+pkginclude_HEADERS += rpmio/rpmver.h
 
 pkginclude_HEADERS += lib/header.h
 pkginclude_HEADERS += lib/rpmdb.h
@@ -98,8 +110,7 @@ bin_PROGRAMS += 	rpm2archive
 endif
 
 rpmlibexec_PROGRAMS =
-rpmconfig_SCRIPTS =	mkinstalldirs \
-			config.guess config.sub
+rpmconfig_SCRIPTS =	mkinstalldirs
 
 noinst_LTLIBRARIES = 		libcliutils.la
 libcliutils_la_SOURCES = 	cliutils.h cliutils.c
@@ -107,8 +118,8 @@ libcliutils_la_CPPFLAGS =	$(AM_CPPFLAGS)
 libcliutils_la_LIBADD = 	lib/librpm.la rpmio/librpmio.la
 libcliutils_la_LIBADD +=	@WITH_POPT_LIB@
 
-rpm_SOURCES =		rpmqv.c debug.h system.h
-rpm_CPPFLAGS =		$(AM_CPPFLAGS) -DIAM_RPMEIU -DIAM_RPMQ -DIAM_RPMV
+rpm_SOURCES =		rpm.c debug.h system.h
+rpm_CPPFLAGS =		$(AM_CPPFLAGS)
 rpm_LDADD =		libcliutils.la
 rpm_LDADD +=		lib/librpm.la rpmio/librpmio.la
 rpm_LDADD +=		@WITH_POPT_LIB@
@@ -262,24 +273,6 @@ uninstall-local:
 
 MAINTAINERCLEANFILES = ChangeLog
 
-# Build hacking docs only on request
-if HACKINGDOCS
-if DOXYGEN
-doc/hacking.doxy: doc/hacking.doxy.in doc/hacking/Doxyheader.h Makefile.am
-	$(SED) \
-	  -e "s,\@top_srcdir\@/,$(top_srcdir)/,g" \
-	  -e "s,[@]HAVE_DOT[@],$(HAVE_DOT)," \
-	  -e "s,[@]PACKAGE[@],$(PACKAGE)," \
-	  -e "s,[@]VERSION[@],$(VERSION)," \
-	< $(top_srcdir)/doc/hacking.doxy.in > doc/hacking.doxy
-
-doc/hacking/html/index.html: doc/hacking.doxy rpmpopt-@VERSION@
-	@DOXYGEN@ doc/hacking.doxy
-noinst_DATA += doc/hacking/html/index.html
-endif
-endif
-EXTRA_DIST += doc/hacking.doxy.in doc/hacking/Doxyheader.h
-
 # Always build librpm docs
 if DOXYGEN
 doc/librpm.doxy: doc/librpm.doxy.in doc/librpm/Doxyheader.h Makefile.am configure.ac $(pkginclude_HEADERS)
@@ -291,9 +284,9 @@ doc/librpm.doxy: doc/librpm.doxy.in doc/librpm/Doxyheader.h Makefile.am configur
 	  -e "s,[@]VERSION[@],$(VERSION)," \
 	< $(top_srcdir)/doc/librpm.doxy.in > doc/librpm.doxy
 
-doc/librpm/html/index.html: doc/librpm.doxy
+doc/librpm/html: doc/librpm.doxy
 	@DOXYGEN@ doc/librpm.doxy
-noinst_DATA += doc/librpm/html/index.html
+noinst_DATA += doc/librpm/html
 endif
 EXTRA_DIST += doc/librpm.doxy.in doc/librpm/Doxyheader.h
 EXTRA_DIST += doc/librpm/html
@@ -305,6 +298,11 @@ BUILT_SOURCES += db.h
 endif
 DISTCLEANFILES = db.h
 
+.PHONY: ci
+ci:
+	podman build -t rpm -f ci/Dockerfile .
+	podman run -t rpm
+
 ChangeLog:
 	touch ChangeLog
 
@@ -312,7 +310,6 @@ dist-hook:
 	if [ -d .git ] && [ -x $(command -v git) ]; then git log --no-merges > $(distdir)/ChangeLog; fi
 
 clean-local:
-	rm -rf doc/hacking/html
 	rm -rf include
 
 distclean-local:

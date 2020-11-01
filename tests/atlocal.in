@@ -1,6 +1,6 @@
 LD_LIBRARY_PATH="${abs_builddir}/testing@usrlibdir@"
 export LD_LIBRARY_PATH
-PATH="${abs_builddir}/testing@rpmbindir@:${abs_builddir}/testing@usrbindir@:$PATH"
+PATH="${abs_builddir}/testing@rpmbindir@:${abs_builddir}/testing@usrbindir@:${abs_builddir}/testing@usrlibexecdir@:$PATH"
 export PATH
 
 PYTHON=@PYTHON@
@@ -17,14 +17,19 @@ RPM_CONFIGDIR="${RPMTEST}/@RPMCONFIGDIR@"
 RPM_POPTEXEC_PATH="${RPMTEST}/@usrbindir@"
 export RPM_CONFIGDIR RPM_POPTEXEC_PATH
 
+DBFORMAT=$(awk '/^%_db_backend/{print $2}' "${RPM_CONFIGDIR}/macros")
+export DBFORMAT
+
 # Popt looks into $HOME
-HOME="${RPMTEST}"
+HOME="${PWD}"
 export HOME
 
 TZ=UTC
 export TZ
 
-TOPDIR="${RPMTEST}/build"
+unset SOURCE_DATE_EPOCH
+
+TOPDIR="${HOME}/build"
 
 RPM_XFAIL=${RPM_XFAIL-1}
 if grep -q 'WITH_LUA 1' "${abs_top_builddir}/config.h"; then
@@ -43,27 +48,41 @@ else
     CAP_DISABLED=true;
 fi
 
+function setup_env()
+{
+    if [ -d testing ]; then
+        RPMTEST=${PWD}/testing
+        HOME=${RPMTEST}
+        RPM_CONFIGDIR=${RPMTEST}/@RPMCONFIGDIR@
+        export RPMTEST HOME RPM_CONFIGDIR
+    fi
+}
+
 function run()
 {
-    "$@" --define "_tmppath ${RPMTEST}/tmp" --define "_topdir ${TOPDIR}" --dbpath="${RPMTEST}/var/lib/rpm/"
+    setup_env
+    "$@" --define "_buildhost testhost" --define "_tmppath ${RPMTEST}/tmp" --define "_topdir ${TOPDIR}" --define "_db_backend ${DBFORMAT}" --dbpath="${RPMTEST}/var/lib/rpm/"
 }
 
 function rundebug()
 {
+    setup_env
     cp ${RPMDATA}/macros.debug ${RPM_CONFIGDIR}/macros.d/
-    "$@" --define "_tmppath ${RPMTEST}/tmp" --define "_topdir ${TOPDIR}" --dbpath="${RPMTEST}/var/lib/rpm/"
+    "$@" --define "_buildhost testhost" --define "_tmppath ${RPMTEST}/tmp" --define "_topdir ${TOPDIR}" --define "_db_backend ${DBFORMAT}" --dbpath="${RPMTEST}/var/lib/rpm/"
     rm -f ${RPM_CONFIGDIR}/macros.d/macros.debug
 }
 
 function runroot()
 {
+    setup_env
     (unset RPM_CONFIGDIR RPM_POPTEXEC_PATH; cd ${RPMTEST} && \
-     MAGIC="/magic/magic" FAKECHROOT_BASE="${RPMTEST}" fakechroot "$@" --define "_topdir /build" --noplugins --nouserns
+     MAGIC="/magic/magic" FAKECHROOT_BASE="${RPMTEST}" fakechroot "$@" --define "_buildhost testhost" --define "_topdir /build" --noplugins --nouserns
     )
 }
 
 function runroot_other()
 {
+    setup_env
     (unset RPM_CONFIGDIR RPM_POPTEXEC_PATH; cd ${RPMTEST} && \
      FAKECHROOT_BASE="${RPMTEST}" fakechroot "$@"
     )

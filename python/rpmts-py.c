@@ -150,6 +150,7 @@ struct rpmtsCallbackType_s {
     PyObject * cb;
     PyObject * data;
     rpmtsObject * tso;
+    int style;
     PyThreadState *_save;
 };
 
@@ -169,6 +170,17 @@ static void die(PyObject *cb)
 	    	      pyfn ? pyfn : "???");
     exit(EXIT_FAILURE);
 }
+
+int rpmtsFromPyObject(PyObject *item, rpmts *ts)
+{
+    if (rpmtsObject_Check(item)) {
+	*ts = ((rpmtsObject *) item)->ts;
+	return 1;
+    }
+    PyErr_SetString(PyExc_TypeError, "TransactionSet object expected");
+    return 0;
+}
+
 
 static PyObject *
 rpmts_AddInstall(rpmtsObject * s, PyObject * args)
@@ -233,14 +245,14 @@ rpmts_SolveCallback(rpmts ts, rpmds ds, const void * data)
     args = Py_BuildValue("(OiNNi)", cbInfo->tso,
 		rpmdsTagN(ds), utf8FromString(rpmdsN(ds)),
 		utf8FromString(rpmdsEVR(ds)), rpmdsFlags(ds));
-    result = PyEval_CallObject(cbInfo->cb, args);
+    result = PyObject_Call(cbInfo->cb, args, NULL);
     Py_DECREF(args);
 
     if (!result) {
 	die(cbInfo->cb);
     } else {
-	if (PyInt_Check(result))
-	    res = PyInt_AsLong(result);
+	if (PyLong_Check(result))
+	    res = PyLong_AsLong(result);
 	Py_DECREF(result);
     }
 
@@ -367,6 +379,21 @@ rpmts_VerifyDB(rpmtsObject * s)
 }
 
 static PyObject *
+rpmts_dbCookie(rpmtsObject * s)
+{
+    PyObject *ret = NULL;
+    char *cookie = NULL;
+
+    Py_BEGIN_ALLOW_THREADS
+    cookie = rpmdbCookie(rpmtsGetRdb(s->ts));
+    Py_END_ALLOW_THREADS
+
+    ret = utf8FromString(cookie);
+    free(cookie);
+    return ret;
+}
+
+static PyObject *
 rpmts_HdrFromFdno(rpmtsObject * s, PyObject *arg)
 {
     PyObject *ho = NULL;
@@ -484,11 +511,10 @@ static PyObject *rpmts_getKeyring(rpmtsObject *s, PyObject *args, PyObject *kwds
 }
 
 static void *
-rpmtsCallback(const void * hd, const rpmCallbackType what,
+rpmtsCallback(const void * arg, const rpmCallbackType what,
 		         const rpm_loff_t amount, const rpm_loff_t total,
 	                 const void * pkgKey, rpmCallbackData data)
 {
-    Header h = (Header) hd;
     struct rpmtsCallbackType_s * cbInfo = data;
     PyObject * pkgObj = (PyObject *) pkgKey;
     PyObject * args, * result;
@@ -498,21 +524,37 @@ rpmtsCallback(const void * hd, const rpmCallbackType what,
 
     PyEval_RestoreThread(cbInfo->_save);
 
-    /* Synthesize a python object for callback (if necessary). */
-    if (pkgObj == NULL) {
-	if (h) {
-	    pkgObj = utf8FromString(headerGetString(h, RPMTAG_NAME));
-	} else {
-	    pkgObj = Py_None;
-	    Py_INCREF(pkgObj);
-	}
-    } else
-	Py_INCREF(pkgObj);
 
-    args = Py_BuildValue("(iLLOO)", what, amount, total, pkgObj, cbInfo->data);
-    result = PyEval_CallObject(cbInfo->cb, args);
+    if (cbInfo->style == 0) {
+	/* Synthesize a python object for callback (if necessary). */
+	if (pkgObj == NULL) {
+	    if (arg) {
+		Header h = (Header) arg;
+		pkgObj = utf8FromString(headerGetString(h, RPMTAG_NAME));
+	    } else {
+		pkgObj = Py_None;
+		Py_INCREF(pkgObj);
+	    }
+	} else
+	    Py_INCREF(pkgObj);
+
+	args = Py_BuildValue("(iLLOO)", what, amount, total,
+				pkgObj, cbInfo->data);
+	Py_DECREF(pkgObj);
+    } else {
+	PyObject *o;
+	if (arg) {
+	    o = rpmte_Wrap(&rpmte_Type, (rpmte) arg);
+	} else {
+	    o = Py_None;
+	    Py_INCREF(o);
+	}
+	args = Py_BuildValue("(OiLLO)", o, what, amount, total, cbInfo->data);
+	Py_DECREF(o);
+    }
+
+    result = PyObject_Call(cbInfo->cb, args, NULL);
     Py_DECREF(args);
-    Py_DECREF(pkgObj);
 
     if (!result) {
 	die(cbInfo->cb);
@@ -564,6 +606,7 @@ rpmts_Run(rpmtsObject * s, PyObject * args, PyObject * kwds)
 	return NULL;
 
     cbInfo.tso = s;
+    cbInfo.style = rpmtsGetNotifyStyle(s->ts);
     cbInfo._save = PyEval_SaveThread();
 
     if (cbInfo.cb != NULL) {
@@ -625,8 +668,8 @@ rpmts_Match(rpmtsObject * s, PyObject * args, PyObject * kwds)
 	return NULL;
 
     if (Key) {
-	if (PyInt_Check(Key)) {
-	    lkey = PyInt_AsLong(Key);
+	if (PyLong_Check(Key)) {
+	    lkey = PyLong_AsLong(Key);
 	    key = (char *)&lkey;
 	    len = sizeof(lkey);
 	} else if (PyLong_Check(Key)) {
@@ -797,6 +840,9 @@ Remove all elements from the transaction set\n" },
  {"dbIndex",     (PyCFunction) rpmts_index,	METH_VARARGS|METH_KEYWORDS,
 "ts.dbIndex(TagN) -> ii\n\
 - Create a key iterator for the default transaction rpmdb.\n" },
+ {"dbCookie",	(PyCFunction) rpmts_dbCookie, 	METH_NOARGS,
+"dbCookie -> cookie\n\
+- Return a cookie string for determining if database has changed\n" },
     {NULL,		NULL}		/* sentinel */
 };
 
@@ -847,6 +893,20 @@ static PyObject *rpmts_get_tid(rpmtsObject *s, void *closure)
 static PyObject *rpmts_get_rootDir(rpmtsObject *s, void *closure)
 {
     return utf8FromString(rpmtsRootDir(s->ts));
+}
+
+static PyObject *rpmts_get_cbstyle(rpmtsObject *s, void *closure)
+{
+    return Py_BuildValue("i", rpmtsGetNotifyStyle(s->ts));
+}
+
+static int rpmts_set_cbstyle(rpmtsObject *s, PyObject *value, void *closure)
+{
+    int cbstyle;
+    int rc = -1;
+    if (PyArg_Parse(value, "i", &cbstyle))
+	rc = rpmtsSetNotifyStyle(s->ts, cbstyle);
+    return rc;
 }
 
 static int rpmts_set_scriptFd(rpmtsObject *s, PyObject *value, void *closure)
@@ -981,6 +1041,8 @@ static char rpmts_doc[] =
   "The transaction set offers an read only iterable interface for the\ntransaction elements added by the .addInstall(), .addErase() and\n.addReinstall() methods.";
 
 static PyGetSetDef rpmts_getseters[] = {
+	{"cbStyle",	(getter)rpmts_get_cbstyle, (setter)rpmts_set_cbstyle,
+	 "progress callback style" },
 	/* only provide a setter until we have rpmfd wrappings */
 	{"scriptFd",	NULL,	(setter)rpmts_set_scriptFd,
 	 "write only, file descriptor the output of script gets written to." },

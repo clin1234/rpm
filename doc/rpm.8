@@ -263,6 +263,10 @@ included in the binary package relocation hint(s).
 Don't install files whose name begins with
 \fIOLDPATH\fR.
 .TP
+\fB--excludeartifacts\fR
+Don't install any files which are marked as artifacts,
+such as build-id links.
+.TP
 \fB--excludedocs\fR
 Don't install any files which are marked as documentation
 (which includes man pages and texinfo documents).
@@ -524,6 +528,9 @@ Display signature fingerprint and time.
 .TP
 \fB:shescape\fR
 Escape single quotes for use in a script.
+.TP
+\fB:string\fR
+Display string format. (default)
 .TP
 \fB:triggertype\fR
 Display trigger suffix.
@@ -923,7 +930,7 @@ Install the package containing \fBrpmbuild\fR (usually \fBrpm-build\fR) and see
 .PP
 .nf
 \fI/usr/lib/rpm/rpmrc\fR
-\fI/usr/lib/rpm/redhat/rpmrc\fR
+\fI/usr/lib/rpm/<vendor>/rpmrc\fR
 \fI/etc/rpmrc\fR
 \fI~/.rpmrc\fR
 .fi
@@ -931,7 +938,7 @@ Install the package containing \fBrpmbuild\fR (usually \fBrpm-build\fR) and see
 .PP
 .nf
 \fI/usr/lib/rpm/macros\fR
-\fI/usr/lib/rpm/redhat/macros\fR
+\fI/usr/lib/rpm/<vendor>/macros\fR
 \fI/etc/rpm/macros\fR
 \fI~/.rpmmacros\fR
 .fi

@@ -1,6 +1,10 @@
 To build RPM you will need several other packages:
 --------------------------------------------------
 
+The popt library for option parsing, must be version 1.13 or later.
+It is available from
+    http://ftp.rpm.org/popt/
+
 The zlib library for compression support. You might also need/want
 the unzip executable for java jar dependency analysis. All available from
     http://www.gzip.org/zlib/
@@ -10,20 +14,11 @@ The source for the file utility + library is available from
     ftp://ftp.astron.com/pub/file/
 
 You will need a cryptographic library to support digests and signatures.
-This library may be Mozilla NSS, OpenSSL or beecrypt. Which library to use
-must be specified with the --with-crypto=[beecrypt|nss|openssl] argument
-to configure.
+This library may be libgcrypt or OpenSSL, and can be specified with the
+--with-crypto=[libgcrypt|openssl] argument to configure.
+libgcrypt is the default.
 
-If using the Mozilla NSS library for encyption (and NSPR library which
-NSS uses) it must be version 3.12 or later. Both NSPR and NSS libraries and
-headers need to be installed during RPM compilation. As NSPR and NSS
-typically install their headers outside the regular include search path,
-you need to tell configure about this, eg something like:
-    ./configure <......> CPPFLAGS="-I/usr/include/nspr -I/usr/include/nss"
-
-The NSPR and NSS libraries are available from 
-    http://www.mozilla.org/projects/security/pki/nss/
-    http://www.mozilla.org/projects/nspr/
+libgcrypt library is available from https://www.gnupg.org/software/libgcrypt/
 
 If using the OpenSSL library for encryption, it must be version 1.0.2 or
 later. Note: when compiling against OpenSSL, there is a possible license
@@ -37,8 +32,18 @@ Debian: https://lists.debian.org/debian-legal/2002/10/msg00113.html
 
 The OpenSSL crypto library is available from https://www.openssl.org/
 
+RPM needs a database engine for normal operation. The main options are 
+"ndb" (--enable-ndb) and "sqlite" (--enable-sqlite), and the now
+deprecated "bdb" (--enable-bdb). Additionally standalone support for
+read-only BDB databases is available as "bdb_ro" (--enable-bdb-ro)
+to aid with migration from BDB.
+
+The ndb and bdb_ro backends have no external dependencies.
+SQLite >= 3.22.0 is required for the sqlite database backend.
+SQLite is available from https://www.sqlite.org/
+
 The Berkeley DB >= 4.3.x (4.5.x or newer recommended) is required for the
-default database backend. BDB can be downloaded from
+deprecated "bdb" database backend. BDB can be downloaded from
 http://www.oracle.com/technology/software/products/berkeley-db/index.html
 
 RPM supports two different ways to include it, both methods have their 
@@ -133,15 +138,15 @@ autoconf, automake, gettext, libtool, makeinfo, perl, GNU m4, GNU tar
 available from 
     http://www.gnu.org/
 
-RPM distribution tarballs come with doxygen generated HTML documentation
-for the public RPM API, but if you want to generate documentation for
-the entire source including internal API's, use --enable-hackingdocs
-configure option. Doxygen is needed for this, it's available at
-    http://www.stack.nl/~dimitri/doxygen/
-
 If you plan on using cryptographic signatures you will need a version
 of GPG, available from
     http://www.gnupg.org/
+
+OpenMP multithreading support is automatically enabled if your C compiler has
+support for OpenMP version 4.5 or higher (to disable, pass the --disable-openmp
+option to configure).  For GCC, OpenMP 4.5 is fully supported since GCC 6.1,
+which is available from
+    http://www.gnu.org/
 
 To compile RPM:
 --------------

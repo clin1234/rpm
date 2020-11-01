@@ -37,6 +37,9 @@
 /** \defgroup	rpmstrpool	String Pool API.
     \brief How to store strings in pools.
  */
+/** \defgroup	rpmver		RPM version API.
+    \brief Rpm version comparison API.
+ */
 /** @} */
 /** \defgroup install (un)Installing packages:
  *
@@ -104,7 +107,6 @@
  *
  * @{
  */
-/** \defgroup	header	Header API.
 /** \defgroup	rpmdb	Database API.
     \brief Opening & accessing the RPM indices using Berkeley DB (the so called rpmdb)
  */
@@ -123,7 +125,6 @@
 /** \defgroup	rpmcli	Command Line API.
     \brief Parsing RPM command line arguments.
  */
-/** @} */
 /** \defgroup	rpmsq	Signal Queue API.
     \brief Signal Queue API.
  */

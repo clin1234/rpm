@@ -37,7 +37,7 @@ static void printFileInfo(const char * name,
     char ownerfield[8+1], groupfield[8+1];
     char timefield[100];
     time_t when = mtime;  /* important if sizeof(int32_t) ! sizeof(time_t) */
-    struct tm * tm;
+    struct tm * tm, _tm;
     char * perms = rpmPermsString(mode);
     char *link = NULL;
 
@@ -62,7 +62,7 @@ static void printFileInfo(const char * name,
     }
 
     /* Convert file mtime to display format */
-    tm = localtime(&when);
+    tm = localtime_r(&when, &_tm);
     timefield[0] = '\0';
     if (tm != NULL)
     {	const char *fmt;
@@ -294,6 +294,19 @@ static int rpmcliShowMatches(QVA_t qva, rpmts ts, rpmdbMatchIterator mi)
     return ec;
 }
 
+static rpmdbMatchIterator matchesIterator(rpmts ts, rpmDbiTag dbi,
+					const void *arg, size_t arglen)
+{
+    unsigned int matches = 0;
+    rpmdbMatchIterator mi = rpmtsInitIterator(ts, dbi, arg, arglen);
+    while (rpmdbNextIterator(mi) != NULL)
+	matches++;
+    mi = rpmdbFreeIterator(mi);
+    if (matches)
+	mi = rpmtsInitIterator(ts, dbi, arg, arglen);
+    return mi;
+}
+
 static rpmdbMatchIterator initQueryIterator(QVA_t qva, rpmts ts, const char * arg)
 {
     const char * s;
@@ -477,7 +490,7 @@ static rpmdbMatchIterator initQueryIterator(QVA_t qva, rpmts ts, const char * ar
 	}
 	rpmlog(RPMLOG_DEBUG, "package record number: %u\n", recOffset);
 	/* RPMDBI_PACKAGES */
-	mi = rpmtsInitIterator(ts, RPMDBI_PACKAGES, &recOffset, sizeof(recOffset));
+	mi = matchesIterator(ts, RPMDBI_PACKAGES, &recOffset, sizeof(recOffset));
 	if (mi == NULL) {
 	    rpmlog(RPMLOG_ERR, _("record %u could not be read\n"), recOffset);
 	}
@@ -485,18 +498,10 @@ static rpmdbMatchIterator initQueryIterator(QVA_t qva, rpmts ts, const char * ar
 
     case RPMQV_PACKAGE:
     {
-	int matches = 0;
-	mi = rpmtsInitIterator(ts, RPMDBI_LABEL, arg, 0);
-	while (rpmdbNextIterator(mi) != NULL) {
-	    matches++;
-	}
-	mi = rpmdbFreeIterator(mi);
-	if (! matches) {
-	    if (!rpmFileHasSuffix(arg, ".rpm"))
-		rpmlog(RPMLOG_NOTICE, _("package %s is not installed\n"), arg);
-	} else {
-	    mi = rpmtsInitIterator(ts, RPMDBI_LABEL, arg, 0);
-	}
+	mi = matchesIterator(ts, RPMDBI_LABEL, arg, 0);
+
+	if (mi == NULL && !rpmFileHasSuffix(arg, ".rpm"))
+	    rpmlog(RPMLOG_NOTICE, _("package %s is not installed\n"), arg);
 	break;
     }
     default:
@@ -559,12 +564,17 @@ int rpmcliArgIter(rpmts ts, QVA_t qva, ARGV_const_t argv)
     }
     case RPMQV_SPECRPMS:
     case RPMQV_SPECBUILTRPMS:
-    case RPMQV_SPECSRPM:
+    case RPMQV_SPECSRPM: {
+	char *target = rpmExpand("%{_target}", NULL);
 	for (ARGV_const_t arg = argv; arg && *arg; arg++) {
 	    ec += ((qva->qva_specQuery != NULL)
 		    ? qva->qva_specQuery(ts, qva, *arg) : 1);
+	    rpmFreeMacros(NULL);
+	    rpmReadConfigFiles(rpmcliRcfile, target);
 	}
+	free(target);
 	break;
+    }
     default:
 	for (ARGV_const_t arg = argv; arg && *arg; arg++) {
 	    int ecLocal;

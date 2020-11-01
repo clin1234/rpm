@@ -82,8 +82,6 @@ optflags: armv7hl -O2 -g -march=armv7-a -mfloat-abi=hard -mfpu=vfpv3-d16
 optflags: armv7hnl -O2 -g -march=armv7-a -mfloat-abi=hard -mfpu=neon
 optflags: armv8l -O2 -g -march=armv8-a
 optflags: armv8hl -O2 -g -march=armv8-a -mfloat-abi=hard -mfpu=vfpv4
-optflags: armv8hnl -O2 -g -march=armv8-a -mfloat-abi=hard -mfpu=neon-fp-armv8
-optflags: armv8hcnl -O2 -g -march=armv8-a -mfloat-abi=hard -mfpu=crypto-neon-fp-armv8
 
 optflags: m68k -O2 -g -fomit-frame-pointer
 
@@ -103,7 +101,6 @@ optflags: sh4 -O2 -g -mieee
 optflags: sh4a -O2 -g -mieee
 
 optflags: aarch64 -O2 -g
-optflags: arm64 -O2 -g
 
 optflags: riscv64 -O2 -g
 
@@ -225,8 +222,6 @@ arch_canon:     armv7hl: armv7hl 	12
 arch_canon:     armv7hnl: armv7hnl 	12
 arch_canon:	armv8l: armv8l	12
 arch_canon:	armv8hl: armv8hl	12
-arch_canon:	armv8hnl: armv8hnl	12
-arch_canon:	armv8hcnl: armv8hcnl	12
 
 arch_canon:	m68kmint: m68kmint	13
 arch_canon:	atarist: m68kmint	13
@@ -252,9 +247,7 @@ arch_canon:	sh3: sh3	17
 arch_canon:	sh4: sh4	17
 arch_canon:	sh4a: sh4a	17
 arch_canon:	xtensa: xtensa	18
-
-arch_canon:	aarch64: aarch64	19
-arch_canon:	arm64: arm64		19
+arch_canon:	aarch64: aarch64 19
 
 arch_canon:	mipsr6: mipsr6	20
 arch_canon:	mipsr6el: mipsr6el	20
@@ -356,8 +349,6 @@ buildarchtranslate: armv7hl: armv7hl
 buildarchtranslate: armv7hnl: armv7hnl
 buildarchtranslate: armv8l: armv8l
 buildarchtranslate: armv8hl: armv8hnl
-buildarchtranslate: armv8hnl: armv8hnl
-buildarchtranslate: armv8hcnl: armv8hcnl
 
 buildarchtranslate: mips: mips
 buildarchtranslate: mipsel: mipsel
@@ -393,7 +384,6 @@ buildarchtranslate: sh4: sh4
 buildarchtranslate: sh4a: sh4
 
 buildarchtranslate: aarch64: aarch64
-buildarchtranslate: arm64: aarch64
 
 buildarchtranslate: riscv: riscv64
 buildarchtranslate: riscv64: riscv64
@@ -475,9 +465,6 @@ arch_compat: armv5tl: armv4tl
 arch_compat: armv4tl: armv4l
 arch_compat: armv4l: armv3l
 arch_compat: armv3l: noarch
-arch_compat: armv8hcnl: armv8hnl
-arch_compat: armv8hnl: armv8hl
-arch_compat: armv8hnl: armv7hnl
 arch_compat: armv8hl: armv7hl
 arch_compat: armv7hnl: armv7hl
 arch_compat: armv7hl: armv6hl
@@ -507,8 +494,7 @@ arch_compat: sh3: noarch
 arch_compat: sh4: noarch
 arch_compat: sh4a: sh4
 
-arch_compat: aarch64: arm64 noarch
-arch_compat: arm64: aarch64 noarch
+arch_compat: aarch64: noarch
 
 arch_compat: riscv: noarch
 arch_compat: riscv64: noarch
@@ -545,7 +531,6 @@ os_compat: Darwin: MacOSX
 buildarch_compat: ia64: noarch
 
 buildarch_compat: aarch64: noarch
-buildarch_compat: arm64: aarch64
 
 buildarch_compat: riscv: noarch
 buildarch_compat: riscv64: noarch

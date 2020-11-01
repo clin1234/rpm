@@ -45,12 +45,13 @@ static rpmRC checkOwners(const char * urlfn)
  * @param fuzz		fuzz factor, fuzz<0 means no fuzz set
  * @param dir		dir to change to (i.e. patch -d argument)
  * @param outfile	send output to this file (i.e. patch -o argument)
+ * @param setUtc	include -Z?
  * @return		expanded %patch macro (NULL on error)
  */
 
 static char *doPatch(rpmSpec spec, uint32_t c, int strip, const char *db,
 		     int reverse, int removeEmpties, int fuzz, const char *dir,
-		     const char *outfile)
+		     const char *outfile, int setUtc)
 {
     char *buf = NULL;
     char *arg_backup = NULL;
@@ -88,9 +89,10 @@ static char *doPatch(rpmSpec spec, uint32_t c, int strip, const char *db,
 	rasprintf(&arg_fuzz, " --fuzz=%d", fuzz);
     } else arg_fuzz = xstrdup("");
 
-    rasprintf(&args, "%s -p%d %s%s%s%s%s%s", arg_patch_flags, strip, arg_backup, arg_fuzz, arg_dir, arg_outfile,
+    rasprintf(&args, "%s -p%d %s%s%s%s%s%s%s", arg_patch_flags, strip, arg_backup, arg_fuzz, arg_dir, arg_outfile,
 		reverse ? " -R" : "", 
-		removeEmpties ? " -E" : "");
+		removeEmpties ? " -E" : "",
+		setUtc ? " -Z" : "");
 
     /* Avoid the extra cost of fork and pipe for uncompressed patches */
     if (compressed != COMPRESSED_NOT) {
@@ -144,7 +146,8 @@ static char *doUntar(rpmSpec spec, uint32_t c, int quietly)
 
     tar = rpmGetPath("%{__tar}", NULL);
     if (compressed != COMPRESSED_NOT) {
-	char *zipper, *t = NULL;
+	char *zipper = NULL;
+	const char *t = NULL;
 	int needtar = 1;
 	int needgemspec = 0;
 
@@ -212,11 +215,11 @@ static char *doUntar(rpmSpec spec, uint32_t c, int quietly)
 
 exit:
     free(tar);
-    return rstrcat(&buf,
-		"\nSTATUS=$?\n"
-		"if [ $STATUS -ne 0 ]; then\n"
-		"  exit $STATUS\n"
-		"fi");
+    return buf ? rstrcat(&buf,
+		    "\nSTATUS=$?\n"
+		    "if [ $STATUS -ne 0 ]; then\n"
+		    "  exit $STATUS\n"
+		    "fi") : NULL;
 }
 
 /**
@@ -234,14 +237,12 @@ static int doSetupMacro(rpmSpec spec, const char *line)
     int argc;
     const char ** argv = NULL;
     int arg;
-    const char * optArg;
     int xx;
     rpmRC rc = RPMRC_FAIL;
     uint32_t num;
     int leaveDirs = 0, skipDefaultAction = 0;
     int createDir = 0, quietly = 0;
-    int buildInPlace = 0;
-    const char * dirName = NULL;
+    char * dirName = NULL;
     struct poptOption optionsTable[] = {
 	    { NULL, 'a', POPT_ARG_STRING, NULL, 'a',	NULL, NULL},
 	    { NULL, 'b', POPT_ARG_STRING, NULL, 'b',	NULL, NULL},
@@ -260,9 +261,14 @@ static int doSetupMacro(rpmSpec spec, const char *line)
 	goto exit;
     }
 
+    if (rpmExpandNumeric("%{_build_in_place}")) {
+	rc = RPMRC_OK;
+	goto exit;
+    }
+
     optCon = poptGetContext(NULL, argc, argv, optionsTable, 0);
     while ((arg = poptGetNextOpt(optCon)) > 0) {
-	optArg = poptGetOptArg(optCon);
+	char *optArg = poptGetOptArg(optCon);
 
 	/* We only parse -a and -b here */
 
@@ -279,6 +285,7 @@ static int doSetupMacro(rpmSpec spec, const char *line)
 	    appendLineStringBuf((arg == 'a' ? after : before), chptr);
 	    free(chptr);
 	}
+	free(optArg);
     }
 
     if (arg < -1) {
@@ -296,16 +303,7 @@ static int doSetupMacro(rpmSpec spec, const char *line)
 		  headerGetString(spec->packages->header, RPMTAG_NAME),
 		  headerGetString(spec->packages->header, RPMTAG_VERSION));
     }
-    /* Mer addition - support --build-in-place */
-    if (rpmExpandNumeric("%{_build_in_place}")) {
-	buildInPlace = 1;
-	spec->buildSubdir = NULL;
-    }
-    rpmPushMacro(spec->macros, "buildsubdir", NULL, spec->buildSubdir, RMIL_SPEC);
-    if (buildInPlace) {
-	rc = RPMRC_OK;
-	goto exit;
-    }
+    rpmPushMacroFlags(spec->macros, "buildsubdir", NULL, spec->buildSubdir, RMIL_SPEC, RPMMACRO_LITERAL);
     
     /* cd to the build dir */
     {	char * buildDir = rpmGenPath(spec->rootDir, "%{_builddir}", "");
@@ -371,6 +369,7 @@ exit:
     freeStringBuf(before);
     freeStringBuf(after);
     poptFreeContext(optCon);
+    free(dirName);
     free(argv);
 
     return rc;
@@ -392,16 +391,16 @@ exit:
  */
 static rpmRC doPatchMacro(rpmSpec spec, const char *line)
 {
-    char *opt_b, *opt_P, *opt_d, *opt_o;
+    char *opt_b, *opt_d, *opt_o;
     char *buf = NULL;
-    int opt_p, opt_R, opt_E, opt_F;
+    int opt_p, opt_R, opt_E, opt_F, opt_Z;
     int argc, c;
     const char **argv = NULL;
     ARGV_t patch, patchnums = NULL;
     rpmRC rc = RPMRC_FAIL; /* assume failure */
     
     struct poptOption const patchOpts[] = {
-	{ NULL, 'P', POPT_ARG_STRING, &opt_P, 'P', NULL, NULL },
+	{ NULL, 'P', POPT_ARG_STRING, NULL, 'P', NULL, NULL },
 	{ NULL, 'p', POPT_ARG_INT, &opt_p, 'p', NULL, NULL },
 	{ NULL, 'R', POPT_ARG_NONE, &opt_R, 'R', NULL, NULL },
 	{ NULL, 'E', POPT_ARG_NONE, &opt_E, 'E', NULL, NULL },
@@ -410,11 +409,12 @@ static rpmRC doPatchMacro(rpmSpec spec, const char *line)
 	{ NULL, 'F', POPT_ARG_INT, &opt_F, 'F', NULL, NULL },
 	{ NULL, 'd', POPT_ARG_STRING, &opt_d, 'd', NULL, NULL },
 	{ NULL, 'o', POPT_ARG_STRING, &opt_o, 'o', NULL, NULL },
+	{ NULL, 'Z', POPT_ARG_NONE, &opt_Z, 'Z', NULL, NULL},
 	{ NULL, 0, 0, NULL, 0, NULL, NULL }
     };
     poptContext optCon = NULL;
 
-    opt_p = opt_R = opt_E = 0;
+    opt_p = opt_R = opt_E = opt_Z = 0;
     opt_F = rpmExpandNumeric("%{_default_patch_fuzz}");		/* get default fuzz factor for %patch */
     opt_b = opt_d = opt_o = NULL;
 
@@ -452,7 +452,7 @@ static rpmRC doPatchMacro(rpmSpec spec, const char *line)
     }
 
     if (c < -1) {
-	rpmlog(RPMLOG_ERR, _("%s: %s: %s\n"), poptStrerror(c), 
+	rpmlog(RPMLOG_ERR, "%s: %s: %s\n", poptStrerror(c),
 		poptBadOption(optCon, POPT_BADOPTION_NOALIAS), line);
 	goto exit;
     }
@@ -469,7 +469,7 @@ static rpmRC doPatchMacro(rpmSpec spec, const char *line)
 		     *patch, line);
 	    goto exit;
 	}
-	s = doPatch(spec, pnum, opt_p, opt_b, opt_R, opt_E, opt_F, opt_d, opt_o);
+	s = doPatch(spec, pnum, opt_p, opt_b, opt_R, opt_E, opt_F, opt_d, opt_o, opt_Z);
 	if (s == NULL) {
 	    goto exit;
 	}
@@ -481,6 +481,9 @@ static rpmRC doPatchMacro(rpmSpec spec, const char *line)
 
 exit:
     argvFree(patchnums);
+    free(opt_b);
+    free(opt_d);
+    free(opt_o);
     free(argv);
     poptFreeContext(optCon);
     return rc;
@@ -493,7 +496,7 @@ int parsePrep(rpmSpec spec)
 
     if (spec->prep != NULL) {
 	rpmlog(RPMLOG_ERR, _("line %d: second %%prep\n"), spec->lineNum);
-	return PART_ERROR;
+	goto exit;
     }
 
     spec->prep = newStringBuf();
@@ -512,6 +515,7 @@ int parsePrep(rpmSpec spec)
 	    appendStringBuf(spec->prep, *lines);
 	}
 	if (rc != RPMRC_OK && !(spec->flags & RPMSPEC_FORCE)) {
+	    res = PART_ERROR;
 	    goto exit;
 	}
     }
