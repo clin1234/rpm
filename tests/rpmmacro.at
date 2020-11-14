@@ -526,6 +526,16 @@ runroot rpm \
 [])
 AT_CLEANUP
 
+AT_SETUP([test lua support])
+AT_KEYWORDS([macros lua])
+AT_CHECK([[
+lua_disabled=$(runroot rpm --eval '%[%{defined lua}?"0":"1"]'|tr -d '\n')
+test $lua_disabled = $LUA_DISABLED
+]],
+[1],
+[])
+AT_CLEANUP
+
 AT_SETUP([simple lua --eval])
 AT_KEYWORDS([macros lua])
 AT_CHECK([
@@ -767,39 +777,34 @@ bar
 ])
 AT_CLEANUP
 
-AT_SETUP([%verbose negative test])
+AT_SETUP([%verbose macro])
 AT_KEYWORDS([macros verbose])
 AT_CHECK([
-runroot rpm \
-  --eval '%{verbose:%{echo:is verbose}}' \
-  --eval '%{verbose:is verbose text}'\
-  --eval '%{!verbose:%{echo:is not verbose}}'\
-  --eval '%{!verbose:is not verbose text}'
+runroot rpm --eval '%{verbose}'
+runroot rpm -v --eval '%{verbose}'
+runroot rpm --eval '%{verbose:zzz}'
 ],
-[0],
-[
-
-is not verbose
-
-is not verbose text
+[1],
+[0
+1
+],
+[error: %verbose: unexpected argument
 ])
 AT_CLEANUP
 
-AT_SETUP([%verbose positive test])
-AT_KEYWORDS([macros verbose])
+AT_SETUP([%exists macro])
+AT_KEYWORDS([macros])
 AT_CHECK([
-runroot rpm -v \
-  --eval '%{!verbose:%{echo:is not verbose}}' \
-  --eval '%{!verbose:is not verbose text}'\
-  --eval '%{verbose:%{echo:is verbose}}'\
-  --eval '%{verbose:is verbose text}'
+runroot rpm \
+	--eval "%{exists:/data}" \
+	--eval "%{exists:/zzz}" \
+	--eval "%{exists}"
 ],
-[0],
-[
-
-is verbose
-
-is verbose text
+[1],
+[1
+0
+],
+[error: %exists: argument expected
 ])
 AT_CLEANUP
 

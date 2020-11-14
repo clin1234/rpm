@@ -66,6 +66,7 @@ to perform useful operations. The current list is
 	%getncpus	return the number of CPUs
 	%getconfdir	expand to rpm "home" directory (typically /usr/lib/rpm)
 	%dnl		discard to next line (without expanding)
+	%verbose	expand to 1 if rpm is in verbose mode, 0 if not
 
 	%{echo:...}	print ... to stdout
 	%{warn:...}	print warning: ... to stderr
@@ -79,6 +80,7 @@ to perform useful operations. The current list is
 
 	%{basename:...}	basename(1) macro analogue
 	%{dirname:...}	dirname(1) macro analogue
+	%{exists:...}	test file existence, expands to 1/0
 	%{suffix:...}	expand to suffix part of a file name
 	%{url2path:...}	convert url to a local path
 	%{getenv:...}	getenv(3) macro analogue
@@ -96,8 +98,6 @@ to perform useful operations. The current list is
 			intermediate whitespace to a single space
 	%{quote:...}	quote a parametric macro argument, needed to pass
 			empty strings or strings with whitespace
-	%{verbose:...}	expand ... if rpm is in verbose mode (%{!verbose:...}
-			works for non-verbose mode)
 
 	%{S:...}	expand ... to <source> file name
 	%{P:...}	expand ... to <patch> file name
