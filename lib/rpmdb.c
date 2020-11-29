@@ -355,7 +355,7 @@ static int doOpen(rpmdb db, int justPkgs)
 {
     int rc = pkgdbOpen(db, db->db_flags, NULL);
     if (!justPkgs) {
-	for (int dbix = 0; dbix < db->db_ndbi; dbix++) {
+	for (int dbix = 0; rc == 0 && dbix < db->db_ndbi; dbix++) {
 	    rc += indexOpen(db, db->db_tags[dbix], db->db_flags, NULL);
 	}
     }
@@ -489,7 +489,7 @@ static int openDatabase(const char * prefix,
 		int mode, int perms, int flags)
 {
     rpmdb db;
-    int rc;
+    int rc = 0;
     int justCheck = flags & RPMDB_FLAG_JUSTCHECK;
 
     if (dbp)
@@ -505,7 +505,8 @@ static int openDatabase(const char * prefix,
     rpmdbRock = db;
 
     /* Try to ensure db home exists, error out if we can't even create */
-    rc = rpmioMkpath(rpmdbHome(db), 0755, getuid(), getgid());
+    if ((mode & O_ACCMODE) != O_RDONLY)
+	rc = rpmioMkpath(rpmdbHome(db), 0755, getuid(), getgid());
     if (rc == 0) {
 	/* Open just bare minimum when rebuilding a potentially damaged db */
 	int justPkgs = (db->db_flags & RPMDB_FLAG_REBUILD) &&
