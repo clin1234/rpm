@@ -1,4 +1,4 @@
-FROM fedora:32
+FROM registry.fedoraproject.org/fedora:32
 MAINTAINER rpm-maint@lists.rpm.org
 
 WORKDIR /srv/rpm
@@ -28,7 +28,6 @@ RUN dnf -y install \
   file-devel \
   popt-devel \
   libarchive-devel \
-  libdb-devel \
   sqlite-devel \
   libselinux-devel \
   ima-evm-utils-devel \
@@ -56,7 +55,6 @@ RUN ./configure \
   --with-selinux \
   --with-cap \
   --with-acl \
-  --with-lua \
   --with-audit \
   --with-fsverity \
   --enable-bdb \

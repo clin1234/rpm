@@ -558,20 +558,9 @@ runroot rpm \
 [])
 AT_CLEANUP
 
-AT_SETUP([test lua support])
-AT_KEYWORDS([macros lua])
-AT_CHECK([[
-lua_disabled=$(runroot rpm --eval '%[%{defined lua}?"0":"1"]'|tr -d '\n')
-test $lua_disabled = $LUA_DISABLED
-]],
-[1],
-[])
-AT_CLEANUP
-
 AT_SETUP([simple lua --eval])
 AT_KEYWORDS([macros lua])
 AT_CHECK([
-AT_SKIP_IF([$LUA_DISABLED])
 runroot rpm --eval '%{lua:print(5*5)}'
 ],
 [0],
@@ -581,7 +570,6 @@ AT_CLEANUP
 
 AT_SETUP([lua macro arguments])
 AT_KEYWORDS([macros lua])
-AT_SKIP_IF([$LUA_DISABLED])
 AT_CHECK([[
 runroot rpm \
 	--define "foo(a:) %{lua:print(opt.a, arg[1])}" \
@@ -593,10 +581,53 @@ runroot rpm \
 ])
 AT_CLEANUP
 
+AT_SETUP([lua macros table])
+AT_KEYWORDS([macros lua])
+AT_CHECK([[
+runroot rpm \
+	--define "qtst() %{lua:for i=1, #arg do print(' '..i..':'..arg[i]) end}"\
+	--eval "%{lua:print(macros.with('zap'), macros.without('zap'))}" \
+	--eval "%{lua:print(macros.aaa)}" \
+	--eval "%{lua:macros.aaa='bbb'; macros['yyy']='zzz'}" \
+	--eval "%{lua:print(macros['aaa'], macros.yyy)}" \
+	--eval "%{lua:macros.aaa=nil"} \
+	--eval "%{lua:print(macros.aaa)}" \
+	--eval "%{lua:print(macros.qtst('a c'))}" \
+	--eval "%{lua:print(macros.qtst({'a', '', 'c'}))}" \
+	--eval "%{lua:print(macros.qtst('%{?aaa} %{yyy}'))}" \
+	--eval "%{lua:print(macros.qtst({'%{?aaa}', '%{yyy}'}))}" \
+	--eval "%{lua:macros.define({'this', 'that'}); print(macros.this)}"
+]],
+[0],
+[0	1
+nil
+
+bbb	zzz
+
+nil
+ 1:a 2:c
+ 1:a 2: 3:c
+ 1:zzz
+ 1:%{?aaa} 2:%{yyy}
+that
+])
+AT_CLEANUP
+
+AT_SETUP([lua macros recursion])
+AT_KEYWORDS([macros lua])
+AT_CHECK([[
+runroot rpm \
+	--define "%recurse() %{lua:io.write(' '..#arg); if #arg < 16 then table.insert(arg, #arg); macros.recurse(arg) end;}" \
+	--eval "%recurse"
+]],
+[0],
+[ 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16
+])
+AT_CLEANUP
+
 AT_SETUP([lua rpm extensions 1])
 AT_KEYWORDS([macros lua])
 AT_CHECK([
-AT_SKIP_IF([$LUA_DISABLED])
 runroot rpm --eval '%{lua: rpm.define("foo bar") print(rpm.expand("%{foo}"))}'
 ],
 [0],
@@ -607,7 +638,6 @@ AT_CLEANUP
 AT_SETUP([lua rpm extensions 2])
 AT_KEYWORDS([macros lua])
 AT_CHECK([
-AT_SKIP_IF([$LUA_DISABLED])
 runroot rpm --eval '%{lua: print(rpm.vercmp("1.0", "2.0"))}'
 ],
 [0],
@@ -618,7 +648,6 @@ AT_CLEANUP
 AT_SETUP([lua rpm isdefined])
 AT_KEYWORDS([macros lua])
 AT_CHECK([
-AT_SKIP_IF([$LUA_DISABLED])
 runroot rpm \
 	--eval '%{lua: print(rpm.isdefined("with"))}' \
 	--eval '%{lua: print(rpm.isdefined("nil"))}' \
@@ -634,7 +663,6 @@ AT_CLEANUP
 AT_SETUP([lua posix extensions])
 AT_KEYWORDS([macros lua])
 AT_CHECK([
-AT_SKIP_IF([$LUA_DISABLED])
 runroot rpm \
   --eval '%{lua: posix.putenv("LUATEST=ok") print(posix.getenv("LUATEST"))}'
 ],
@@ -646,7 +674,6 @@ AT_CLEANUP
 AT_SETUP([lua script exit behavior])
 AT_KEYWORDS([macros lua])
 AT_CHECK([
-AT_SKIP_IF([$LUA_DISABLED])
 runroot rpm \
   --eval '%{lua: os.exit()}))}'
 ],
@@ -659,7 +686,6 @@ AT_CLEANUP
 AT_SETUP([lua script redirect2null])
 AT_KEYWORDS([macros lua])
 AT_CHECK([
-AT_SKIP_IF([$LUA_DISABLED])
 runroot rpm \
   --eval '%{lua: posix.redirect2null()}))}'
 ],
@@ -672,7 +698,6 @@ AT_CLEANUP
 AT_SETUP([lua library path])
 AT_KEYWORDS([macros lua])
 AT_CHECK([
-AT_SKIP_IF([$LUA_DISABLED])
 RPMDB_INIT
 f=$(run rpm --eval "%{_rpmconfigdir}/lua/foo.lua")
 echo "bar = 'graak'" > ${f}
@@ -688,7 +713,6 @@ AT_CLEANUP
 AT_SETUP([lua rpm version objects])
 AT_KEYWORDS([macros lua])
 AT_CHECK([
-AT_SKIP_IF([$LUA_DISABLED])
 runroot rpm \
   --eval '%{lua: v1 = rpm.ver("1:4.16-5"); print(v1, v1.e, v1.v, v1.r)}' \
   --eval '%{lua: v1 = rpm.ver("4.16-1"); print(v1, v1.e, v1.v, v1.r)}' \
@@ -706,7 +730,6 @@ AT_CLEANUP
 AT_SETUP([lua rpm io stream])
 AT_KEYWORDS([macros lua])
 AT_CHECK([
-AT_SKIP_IF([$LUA_DISABLED])
 RPMDB_INIT
 runroot rpm \
   --eval '%{lua: local f = rpm.open("zzz", "w+"); f:write("gggg"); print(f:seek("cur")); f:close()}' \
@@ -922,3 +945,53 @@ read
 [])
 AT_CLEANUP
 
+AT_SETUP([macro file empty lines])
+AT_KEYWORDS([macros])
+AT_CHECK([
+runroot rpm \
+	--macros /data/macros.testfile \
+	--eval "%{empty0}"
+],
+[0],
+[
+some
+
+thing
+
+],
+[])
+AT_CLEANUP
+
+AT_SETUP([macro traceback])
+AT_KEYWORDS([macros])
+AT_CHECK([
+for o in "-v" ""; do
+    runroot rpm $o \
+	--define "err %{error:bad}" \
+	--define "bar %err" \
+	--define "foo %bar zz" \
+	--eval "xxx%{foo}yyy"
+done
+],
+[1],
+[],
+[error: bad
+  3<        (%error)
+  2<      (%err)
+  1<    (%bar)
+  0<  (%foo)
+xxx
+error: bad
+])
+AT_CLEANUP
+
+AT_SETUP([no space left on stdout])
+AT_KEYWORDS([macros])
+AT_CHECK([
+runroot rpm --eval 1 >/dev/full
+],
+[1],
+[],
+[Error writing to stdout: No space left on device
+])
+AT_CLEANUP

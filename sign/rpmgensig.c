@@ -155,6 +155,7 @@ static rpmtd makeSigTag(Header sigh, int ishdr, uint8_t *pkt, size_t pktlen)
     pubkey_algo = pgpDigParamsAlgo(sigp, PGPVAL_PUBKEYALGO);
     switch (pubkey_algo) {
     case PGPPUBKEYALGO_DSA:
+    case PGPPUBKEYALGO_EDDSA:
 	sigtag = ishdr ? RPMSIGTAG_DSA : RPMSIGTAG_GPG;
 	break;
     case PGPPUBKEYALGO_RSA:
@@ -414,7 +415,7 @@ static void unloadImmutableRegion(Header *hdrp, rpmTagVal tag)
     Header oh = NULL;
 
     if (headerGet(*hdrp, tag, &td, HEADERGET_DEFAULT)) {
-	oh = headerCopyLoad(td.data);
+	oh = headerImport(td.data, td.count, HEADERIMPORT_COPY);
 	rpmtdFreeData(&td);
     } else {
 	/* XXX should we warn if the immutable region is corrupt/missing? */

@@ -25,17 +25,7 @@ typedef struct dbiIndex_s * dbiIndex;
 typedef struct dbiCursor_s * dbiCursor;
 
 struct dbConfig_s {
-    int	db_mmapsize;	/*!< (10Mb) */
-    int	db_cachesize;	/*!< (128Kb) */
-    int	db_verbose;
     int	db_no_fsync;	/*!< no-op fsync for db */
-    int db_eflags;	/*!< obsolete */
-};
-
-struct dbiConfig_s {
-    int	dbi_oflags;		/*!< open flags */
-    int	dbi_no_dbsync;		/*!< don't call dbiSync */
-    int	dbi_lockdbfd;		/*!< do fcntl lock on db fd */
 };
 
 struct rpmdbOps_s;
@@ -66,7 +56,6 @@ struct rpmdb_s {
     void * db_dbenv;		/*!< Backend private handle */
     void * db_cache;		/*!< Backend private cache handle */
     struct dbConfig_s cfg;
-    int db_remove_env;
 
     struct rpmop_s db_getops;
     struct rpmop_s db_putops;
@@ -105,9 +94,6 @@ struct dbiIndex_s {
     dbiIndexType dbi_type;	/*! Type of dbi (primary / index) */
     const char * dbi_file;	/*!< file component of path */
     int dbi_flags;
-    int	dbi_byteswapped;
-
-    struct dbiConfig_s cfg;
 
     void * dbi_db;		/*!< Backend private handle */
 };
@@ -269,11 +255,6 @@ struct rpmdbOps_s {
     rpmRC (*idxdbDel)(dbiIndex dbi, rpmTagVal rpmtag, unsigned int hdrNum, Header h);
     const void * (*idxdbKey)(dbiIndex dbi, dbiCursor dbc, unsigned int *keylen);
 };
-
-#if defined(WITH_BDB)
-RPM_GNUC_INTERNAL
-extern struct rpmdbOps_s db3_dbops;
-#endif
 
 #if defined(WITH_BDB_RO)
 RPM_GNUC_INTERNAL

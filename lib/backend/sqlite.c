@@ -143,15 +143,19 @@ static int sqlite_init(rpmdb rdb, const char * dbhome)
 
 	while (retry_open--) {
 	    xx = sqlite3_open_v2(dbfile, &sdb, flags, NULL);
-	    if (xx == SQLITE_CANTOPEN) {
+	    /* Attempt to create if missing, discarding OPEN_READONLY (!) */
+	    if (xx == SQLITE_CANTOPEN && (flags & SQLITE_OPEN_READONLY)) {
 		/* Sqlite allocates resources even on failure to open (!) */
 		sqlite3_close(sdb);
+		flags &= ~SQLITE_OPEN_READONLY;
+		flags |= (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE);
+		retry_open++;
 	    }
 	}
 
 	if (xx != SQLITE_OK) {
 	    rpmlog(RPMLOG_ERR, _("Unable to open sqlite database %s: %s\n"),
-		    dbfile, sqlite3_errmsg(sdb));
+		    dbfile, sqlite3_errstr(xx));
 	    rc = 1;
 	    goto exit;
 	}

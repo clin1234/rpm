@@ -37,7 +37,7 @@ fi
 AS=${AS-as}
 AC_SUBST(AS)
 if test "$GCC" = yes; then
-    cflags_to_try="-fno-strict-aliasing -fstack-protector -Wempty-body"
+    cflags_to_try="-fno-strict-aliasing -fno-strict-overflow -fno-delete-null-pointer-checks -Wempty-body"
     AC_MSG_CHECKING([supported compiler flags])
     old_cflags=$CFLAGS
     echo
@@ -50,7 +50,7 @@ if test "$GCC" = yes; then
         ],[])
         CFLAGS=$old_cflags
     done
-    RPMCFLAGS="-D_REENTRANT -Wall -Wpointer-arith -Wmissing-prototypes -Wstrict-prototypes $RPMCFLAGS"
+    RPMCFLAGS="-Wall -Wpointer-arith -Wmissing-prototypes -Wstrict-prototypes $RPMCFLAGS"
 fi
 AC_ARG_ENABLE(werror, [AS_HELP_STRING([--enable-werror], [build with -Werror])],
 		[RPMCFLAGS="$RPMCFLAGS -Werror"], [])
@@ -187,6 +187,7 @@ AS_IF([test "x$ac_cv_prog_c_openmp" != x &&
      AC_DEFINE(ENABLE_OPENMP, 1, [Enable multithreading support?])
     ],
     [AC_MSG_RESULT([no])
+     OPENMP_CFLAGS=
      if test "$enable_openmp" = "yes"; then
        AC_MSG_ERROR([OpenMP too old])
      fi
@@ -467,49 +468,6 @@ AM_CONDITIONAL(LIBDW,[test "$WITH_LIBDW" = yes])
 AM_CONDITIONAL(HAVE_LIBDW_STRTAB,[test "$HAVE_LIBDW_STRTAB" = yes])
 
 #=================
-# Check for BDB support
-AC_ARG_ENABLE([bdb],
-              [AS_HELP_STRING([--enable-bdb=@<:@yes/no/auto@:>@ (DEPRECATED)],
-                              [build with Berkeley DB rpm database format support (default=yes)])],
-              [enable_bdb="$enableval"],
-              [enable_bdb=yes])
-
-have_bdb="no"
-AS_IF([test "x$enable_bdb" != "xno"], [
-  if [ test -x db/dist/configure ]; then
-    have_bdb="internal"
-  else
-    AC_CHECK_HEADERS([db.h],[
-      AC_PREPROC_IFELSE([
-        AC_LANG_SOURCE([
-	  #include <db.h>
-	  #if ((DB_VERSION_MAJOR < 4) || (DB_VERSION_MAJOR == 4 && DB_VERSION_MINOR < 5))
-	  #error Berkeley DB too old
-	  #endif
-        ])
-      ],[ have_bdb="yes" ])
-    ])
-  fi
-  AC_MSG_CHECKING(for Berkeley DB >= 4.5)
-  AC_MSG_RESULT($have_bdb)
-  AS_IF([test "x$enable_bdb" = "xyes"], [
-    if test "x$have_bdb" = "xno"; then
-      AC_MSG_ERROR([--enable-bdb specified, but not available])
-    fi
-    AC_DEFINE([WITH_BDB], [1], [Define if BDB is available])
-    WITH_DB_LIB=-ldb
-    AC_SUBST([WITH_DB_LIB])
-  ])
-])
-
-AM_CONDITIONAL([BDB], [test "x$have_bdb" != "xno"])
-AM_CONDITIONAL([WITH_INTERNAL_DB],[test "x$have_bdb" = "xinternal"])
-if test "x$have_bdb" = "xinternal"; then
-    AC_CONFIG_SUBDIRS(db3)
-fi
-
-
-#=================
 # Process --enable-ndb
 AC_ARG_ENABLE([ndb], [AS_HELP_STRING([--enable-ndb],[enable the new rpm database format])],
 [case "$enable_ndb" in
@@ -541,9 +499,9 @@ AM_CONDITIONAL([BDB_RO], [test "$enable_bdb_ro" = yes])
 # Check for SQLITE support
 AC_ARG_ENABLE([sqlite],
               [AS_HELP_STRING([--enable-sqlite=@<:@yes/no/auto@:>@)],
-                              [build with sqlite rpm database format support (default=auto)])],
+                              [build with sqlite rpm database format support (default=yes)])],
               [enable_sqlite="$enableval"],
-              [enable_sqlite=auto])
+              [enable_sqlite=yes])
 
 AS_IF([test "x$enable_sqlite" != "xno"], [
   PKG_CHECK_MODULES([SQLITE], [sqlite3 >= 3.22.0], [have_sqlite=yes], [have_sqlite=no])
@@ -795,19 +753,12 @@ AS_IF([test "$with_acl" = yes],[
 AC_SUBST(WITH_ACL_LIB)
 AM_CONDITIONAL(ACL,[test "$with_acl" = yes])
 
-AC_ARG_WITH([lua], [AS_HELP_STRING([--with-lua], [build with lua support])],
-            [],
-            [with_lua=yes])
-
-AS_IF([test "$with_lua" != no],[
-  PKG_CHECK_MODULES([LUA],
+PKG_CHECK_MODULES([LUA],
     [lua >= 5.2],
-    [AC_DEFINE(WITH_LUA, 1, [Build with lua support?])],
-    [AC_MSG_ERROR([lua not present or too old (--without-lua to disable)])])
-  AC_SUBST(LUA_CFLAGS)
-  AC_SUBST(LUA_LIBS)
-])
-AM_CONDITIONAL(WITH_LUA,[test "$with_lua" = yes])
+    [],
+    [AC_MSG_ERROR([lua not present or too old)])])
+AC_SUBST(LUA_CFLAGS)
+AC_SUBST(LUA_LIBS)
 
 AC_ARG_ENABLE(plugins, [AS_HELP_STRING([--disable-plugins],[build without plugin support])],,[enable_plugins=yes])
 AS_IF([test "$enable_plugins" = yes],[
@@ -843,6 +794,14 @@ AS_IF([test "$enable_plugins" != no],[
 AC_CHECK_HEADERS([linux/fsverity.h],[FSVERITY_IOCTL="yes"])
 ])
 AM_CONDITIONAL(FSVERITY_IOCTL,[test "x$FSVERITY_IOCTL" = xyes])
+
+#=================
+# Check for fapolicyd support
+AC_ARG_WITH(fapolicyd,
+AS_HELP_STRING([--with-fapolicyd],[build with File Access Policy Daemon support]),
+with_fapolicyd=$withval,
+with_fapolicyd=auto)
+AM_CONDITIONAL(FAPOLICYD,[test "$with_fapolicyd" = yes])
 
 #=================
 # Check for audit library.

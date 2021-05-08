@@ -25,10 +25,7 @@
 #include <rpm/rpmmacro.h>
 #include <rpm/argv.h>
 
-#ifdef	WITH_LUA
 #include "rpmio/rpmlua.h"
-#endif
-
 #include "rpmio/rpmmacro_internal.h"
 #include "debug.h"
 
@@ -212,24 +209,32 @@ findEntry(rpmMacroContext mc, const char *name, size_t namelen, size_t *pos)
 static int
 rdcl(char * buf, size_t size, FILE *f)
 {
-    char *q = buf - 1;		/* initialize just before buffer. */
     size_t nb = 0;
-    size_t nread = 0;
     int pc = 0, bc = 0, xc = 0;
     int nlines = 0;
     char *p = buf;
+    char *q = buf;
 
     if (f != NULL)
     do {
-	*(++q) = '\0';			/* terminate and move forward. */
+	*q = '\0';			/* terminate */
 	if (fgets(q, size, f) == NULL)	/* read next line. */
 	    break;
 	nlines++;
 	nb = strlen(q);
-	nread += nb;			/* trim trailing \r and \n */
-	for (q += nb - 1; nb > 0 && iseol(*q); q--)
+	for (q += nb; nb > 0 && iseol(q[-1]); q--)
 	    nb--;
-	for (; p <= q; p++) {
+	if (*q == 0)
+	    break;			/* no newline found, EOF */
+	if (p == buf) {
+            while (*p && isblank(*p))
+                p++;
+            if (*p != '%') {		/* only parse actual macro */
+                *q = '\0';		/* trim trailing \r, \n */
+                break;
+            }
+        }
+	for (; p < q; p++) {
 	    switch (*p) {
 		case '\\':
 		    switch (*(p+1)) {
@@ -253,14 +258,14 @@ rdcl(char * buf, size_t size, FILE *f)
 		case ']': if (xc > 0) xc--; break;
 	    }
 	}
-	if (nb == 0 || (*q != '\\' && !bc && !pc && !xc) || *(q+1) == '\0') {
-	    *(++q) = '\0';		/* trim trailing \r, \n */
+	if ((nb == 0 || q[-1] != '\\') && !bc && !pc && !xc) {
+	    *q = '\0';		/* trim trailing \r, \n */
 	    break;
 	}
 	q++; nb++;			/* copy newline too */
 	size -= nb;
-	if (*q == '\r')			/* XXX avoid \r madness */
-	    *q = '\n';
+	if (q[-1] == '\r')			/* XXX avoid \r madness */
+	    q[-1] = '\n';
     } while (size > 0);
     return nlines;
 }
@@ -355,10 +360,11 @@ printMacro(MacroBuf mb, const char * s, const char * se)
  * @param te		end of string
  */
 static void
-printExpansion(MacroBuf mb, const char * t, const char * te)
+printExpansion(MacroBuf mb, rpmMacroEntry me, const char * t, const char * te)
 {
+    const char *mname = me ? me->name : "";
     if (!(te > t)) {
-	rpmlog(RPMLOG_DEBUG, _("%3d<%*s(empty)\n"), mb->depth, (2 * mb->depth + 1), "");
+	fprintf(stderr, "%3d<%*s (%%%s)\n", mb->depth, (2 * mb->depth + 1), "", mname);
 	return;
     }
 
@@ -374,10 +380,10 @@ printExpansion(MacroBuf mb, const char * t, const char * te)
 
     }
 
-    rpmlog(RPMLOG_DEBUG,"%3d<%*s", mb->depth, (2 * mb->depth + 1), "");
+    fprintf(stderr, "%3d<%*s (%%%s)\n", mb->depth, (2 * mb->depth + 1), "", mname);
     if (te > t)
-	rpmlog(RPMLOG_DEBUG, "%.*s", (int)(te - t), t);
-    rpmlog(RPMLOG_DEBUG, "\n");
+	fprintf(stderr, "%.*s", (int)(te - t), t);
+    fprintf(stderr, "\n");
 }
 
 #define	SKIPBLANK(_s, _c)	\
@@ -458,7 +464,6 @@ static int mbInit(MacroBuf mb, MacroExpansionData *med, size_t slen)
 	mbErr(mb, 1,
 		_("Too many levels of recursion in macro expansion. It is likely caused by recursive macro declaration.\n"));
 	mb->depth--;
-	mb->expand_trace = 1;
 	return -1;
     }
     med->tpos = mb->tpos; /* save expansion pointer for printExpand */
@@ -467,12 +472,14 @@ static int mbInit(MacroBuf mb, MacroExpansionData *med, size_t slen)
     return 0;
 }
 
-static void mbFini(MacroBuf mb, MacroExpansionData *med)
+static void mbFini(MacroBuf mb, rpmMacroEntry me, MacroExpansionData *med)
 {
     mb->buf[mb->tpos] = '\0';
     mb->depth--;
-    if (mb->error != 0 || mb->expand_trace)
-	printExpansion(mb, mb->buf + med->tpos, mb->buf + mb->tpos);
+    if (mb->error && rpmIsVerbose())
+	mb->expand_trace = 1;
+    if (mb->expand_trace)
+	printExpansion(mb, me, mb->buf + med->tpos, mb->buf + mb->tpos);
     mb->macro_trace = med->macro_trace;
     mb->expand_trace = med->expand_trace;
 }
@@ -762,16 +769,29 @@ doUndefine(MacroBuf mb, rpmMacroEntry me, ARGV_t argv)
     return 0;
 }
 
+static size_t doArgvDefine(MacroBuf mb, ARGV_t argv, int level, int expand)
+{
+    char *args = NULL;
+    size_t ret;
+    const char *se = argv[1];
+
+    /* handle the "programmatic" case where macro name is arg1 and body arg2 */
+    if (argv[2])
+	se = args = rstrscat(NULL, argv[1], " ", argv[2], NULL);
+
+    ret = doDefine(mb, se, level, expand);
+    free(args);
+    return ret;
+}
+
 static size_t doDef(MacroBuf mb, rpmMacroEntry me, ARGV_t argv)
 {
-    const char *se = argv[1];
-    return doDefine(mb, se, mb->level, 0);
+    return doArgvDefine(mb, argv, mb->level, 0);
 }
 
 static size_t doGlobal(MacroBuf mb, rpmMacroEntry me, ARGV_t argv)
 {
-    const char *se = argv[1];
-    return doDefine(mb, se, RMIL_GLOBAL, 1);
+    return doArgvDefine(mb, argv, RMIL_GLOBAL, 1);
 }
 
 static size_t doDump(MacroBuf mb, rpmMacroEntry me, ARGV_t argv)
@@ -994,7 +1014,6 @@ static size_t doOutput(MacroBuf mb,  rpmMacroEntry me, ARGV_t argv)
     return 0;
 }
 
-#ifdef WITH_LUA
 static size_t doLua(MacroBuf mb,  rpmMacroEntry me, ARGV_t argv)
 {
     rpmlua lua = NULL; /* Global state. */
@@ -1029,7 +1048,6 @@ static size_t doLua(MacroBuf mb,  rpmMacroEntry me, ARGV_t argv)
     }
     return 0;
 }
-#endif
 
 static size_t
 doSP(MacroBuf mb, rpmMacroEntry me, ARGV_t argv)
@@ -1254,9 +1272,7 @@ static struct builtins_s {
     { "getncpus",	doFoo,		0,	ME_FUNC },
     { "global",		doGlobal,	-1,	ME_PARSE },
     { "load",		doLoad,		1,	ME_FUNC },
-#ifdef WITH_LUA
     { "lua",		doLua,		1,	ME_FUNC },
-#endif
     { "macrobody",	doBody,		1,	ME_FUNC },
     { "quote",		doFoo,		1,	ME_FUNC },
     { "shrink",		doFoo,		1,	ME_FUNC },
@@ -1368,7 +1384,7 @@ static int
 expandMacro(MacroBuf mb, const char *src, size_t slen)
 {
     rpmMacroEntry *mep;
-    rpmMacroEntry me;
+    rpmMacroEntry me = NULL;
     const char *s = src, *se;
     const char *f, *fe;
     const char *g, *ge;
@@ -1537,7 +1553,7 @@ expandMacro(MacroBuf mb, const char *src, size_t slen)
 	s = se + (g ? 0 : fwd);
     }
 
-    mbFini(mb, &med);
+    mbFini(mb, me, &med);
 exit:
     _free(source);
     return mb->error;
@@ -1562,7 +1578,7 @@ expandThisMacro(MacroBuf mb, rpmMacroEntry me, ARGV_const_t args, int flags)
 
     if (mb->macro_trace) {
 	ARGV_const_t av = args;
-	fprintf(stderr, "%3d>%*s%%%s", mb->depth, (2 * mb->depth + 1), "", me->name);
+	fprintf(stderr, "%3d>%*s (%%%s)", mb->depth, (2 * mb->depth + 1), "", me->name);
 	for (av = args; av && *av; av++)
 	    fprintf(stderr, " %s", *av);
 	fprintf(stderr, "\n");
@@ -1588,7 +1604,7 @@ expandThisMacro(MacroBuf mb, rpmMacroEntry me, ARGV_const_t args, int flags)
     if (optargs)
 	argvFree(optargs);
 
-    mbFini(mb, &med);
+    mbFini(mb, me, &med);
 exit:
     return mb->error;
 }

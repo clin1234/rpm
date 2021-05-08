@@ -14,7 +14,14 @@
 #include <string.h>
 #include <stdlib.h>
 #include <sys/mman.h>
+#ifdef __APPLE__
+#include <machine/endian.h>
+#include <libkern/OSByteOrder.h>
+#define htole32(x) OSSwapHostToLittleInt32(x)
+#define le32toh(x) OSSwapLittleToHostInt32(x)
+#else
 #include <endian.h>
+#endif /* __APPLE__ */
 #include <libgen.h>
 #include <dirent.h>
 
@@ -25,7 +32,7 @@
 #define RPMRC_FAIL 2
 
 typedef struct rpmxdb_s {
-    rpmpkgdb pkgdb;             /* master database */
+    rpmpkgdb pkgdb;             /* main database */
     char *filename;
     int fd;
     int flags;
@@ -477,7 +484,7 @@ static int rpmxdbInitInternal(rpmxdb xdb)
     return RPMRC_OK;
 }
 
-/* we use the master pdb for locking */
+/* we use the main pdb for locking */
 static int rpmxdbLockOnly(rpmxdb xdb, int excl)
 {
     int rc;

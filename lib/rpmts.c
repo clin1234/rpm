@@ -104,12 +104,12 @@ int rpmtsOpenDB(rpmts ts, int dbmode)
     return rc;
 }
 
-int rpmtsInitDB(rpmts ts, int dbmode)
+int rpmtsInitDB(rpmts ts, int perms)
 {
     rpmtxn txn = rpmtxnBegin(ts, RPMTXN_WRITE);
     int rc = -1;
     if (txn)
-	    rc = rpmdbInit(ts->rootDir, dbmode);
+	    rc = rpmdbInit(ts->rootDir, perms);
     rpmtxnEnd(txn);
     return rc;
 }
@@ -378,13 +378,18 @@ static void loadKeyring(rpmts ts)
     /* Never load the keyring if signature checking is disabled */
     if ((rpmtsVSFlags(ts) & RPMVSF_MASK_NOSIGNATURES) !=
 	RPMVSF_MASK_NOSIGNATURES) {
+	char *krtype = rpmExpand("%{?_keyring}", NULL);
 	ts->keyring = rpmKeyringNew();
-	if (loadKeyringFromFiles(ts) == 0) {
-	    if (loadKeyringFromDB(ts) > 0) {
-		/* XXX make this a warning someday... */
-		rpmlog(RPMLOG_DEBUG, "Using legacy gpg-pubkey(s) from rpmdb\n");
-	    }
+	if (rstreq(krtype, "fs")) {
+	    loadKeyringFromFiles(ts);
+	} else {
+	    /* Fall back to using rpmdb if unknown, for now at least */
+	    if (!(rstreq(krtype, "") || rstreq(krtype, "rpmdb")))
+		rpmlog(RPMLOG_WARNING,
+			_("unknown keyring type: %s, using rpmdb\n"), krtype);
+	    loadKeyringFromDB(ts);
 	}
+	free(krtype);
     }
 }
 
@@ -473,8 +478,6 @@ static int makePubkeyHeader(rpmts ts, rpmPubkey key, rpmPubkey *subkeys,
     const char * license = "pubkey";
     const char * buildhost = "localhost";
     uint32_t zero = 0;
-    pgpDig dig = NULL;
-    pgpDigParams pubp = NULL;
     struct pgpdata_s kd;
     char * d = NULL;
     char * enc = NULL;
@@ -484,13 +487,9 @@ static int makePubkeyHeader(rpmts ts, rpmPubkey key, rpmPubkey *subkeys,
 
     if ((enc = rpmPubkeyBase64(key)) == NULL)
 	goto exit;
-    if ((dig = rpmPubkeyDig(key)) == NULL)
-	goto exit;
-    if ((pubp = pgpDigGetParams(dig, PGPTAG_PUBLIC_KEY)) == NULL)
-	goto exit;
 
     /* Build header elements. */
-    initPgpData(pubp, &kd);
+    initPgpData(rpmPubkeyPgpDigParams(key), &kd);
 
     rasprintf(&s, "%s public key", kd.userid);
     headerPutString(h, RPMTAG_PUBKEYS, enc);
@@ -533,7 +532,6 @@ static int makePubkeyHeader(rpmts ts, rpmPubkey key, rpmPubkey *subkeys,
 
 exit:
     headerFree(h);
-    pgpFreeDig(dig);
     finiPgpData(&kd);
     free(enc);
     free(d);

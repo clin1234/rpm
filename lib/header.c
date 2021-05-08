@@ -11,6 +11,7 @@
 #include "system.h"
 #include <netdb.h>
 #include <errno.h>
+#include <inttypes.h>
 #include <rpm/rpmtypes.h>
 #include <rpm/rpmstring.h>
 #include "lib/header_internal.h"
@@ -127,6 +128,12 @@ static const size_t headerMaxbytes = (256*1024*1024);
  * Catches out nasties like negative values and multiple regions.
  **/
 #define hdrchkTag(_tag) ((_tag) < HEADER_I18NTABLE)
+
+/**
+ * Reasonableness check on count values.
+ * Most types have further restrictions, these are just the outer perimeter.
+ */
+#define hdrchkCount(_dl, _count) ((_count) < 1 || (_count) > (_dl))
 
 /**
  * Sanity check on type values.
@@ -279,6 +286,8 @@ static rpmRC hdrblobVerifyInfo(hdrblob blob, char **emsg)
 	    goto err;
 	if (hdrchkType(info.type))
 	    goto err;
+	if (hdrchkCount(blob->dl, info.count))
+	    goto err;
 	if (hdrchkAlign(info.type, info.offset))
 	    goto err;
 	if (hdrchkRange(blob->dl, info.offset))
@@ -292,6 +301,15 @@ static rpmRC hdrblobVerifyInfo(hdrblob blob, char **emsg)
 	end = info.offset + len;
 	if (hdrchkRange(blob->dl, end) || len <= 0)
 	    goto err;
+	if (blob->regionTag) {
+	    /*
+	     * Verify that the data does not overlap the region trailer.  The
+	     * region trailer is skipped by this loop, so the other checks
+	     * don’t catch this case.
+	     */
+	    if (end > blob->rdl - REGION_TAG_COUNT && info.offset < blob->rdl)
+		goto err;
+	}
     }
     return 0; /* Everything ok */
 
@@ -391,13 +409,12 @@ unsigned headerSizeof(Header h, int magicp)
 static inline int strtaglen(const char *str, rpm_count_t c, const char *end)
 {
     const char *start = str;
-    const char *s;
+    const char *s = NULL;
+    int len = -1; /* assume failure */
 
     if (end) {
-	if (str >= end)
-	    return -1;
-	while ((s = memchr(start, '\0', end-start))) {
-	    if (--c == 0 || s > end)
+	while (end > start && (s = memchr(start, '\0', end-start))) {
+	    if (--c == 0)
 		break;
 	    start = s + 1;
 	}
@@ -408,7 +425,11 @@ static inline int strtaglen(const char *str, rpm_count_t c, const char *end)
 	    start = s + 1;
 	}
     }
-    return (c > 0) ? -1 : (s - str + 1);
+
+    if (s != NULL && c == 0)
+	len = s - str + 1;
+
+    return len;
 }
 
 /**
@@ -1828,9 +1849,9 @@ static rpmRC hdrblobVerifyRegion(rpmTagVal regionTag, int exact_size,
     /* Is there an immutable header region tag trailer? */
     memset(&trailer, 0, sizeof(trailer));
     regionEnd = blob->dataStart + einfo.offset;
+    /* regionEnd is not guaranteed to be aligned */
     (void) memcpy(&trailer, regionEnd, REGION_TAG_COUNT);
-    regionEnd += REGION_TAG_COUNT;
-    blob->rdl = regionEnd - blob->dataStart;
+    blob->rdl = einfo.offset + REGION_TAG_COUNT;
 
     ei2h(&trailer, &einfo);
     /* Trailer offset is negative and has a special meaning */
@@ -1886,6 +1907,25 @@ hdrblob hdrblobFree(hdrblob blob)
     return NULL;
 }
 
+static rpmRC hdrblobVerifyLengths(rpmTagVal regionTag, uint32_t il, uint32_t dl,
+				  char **emsg) {
+    uint32_t il_max = HEADER_TAGS_MAX;
+    uint32_t dl_max = HEADER_DATA_MAX;
+    if (regionTag == RPMTAG_HEADERSIGNATURES) {
+	il_max = 32;
+	dl_max = 64 * 1024 * 1024;
+    }
+    if (hdrchkRange(il_max, il)) {
+	rasprintf(emsg, _("hdr tags: BAD, no. of tags(%" PRIu32 ") out of range"), il);
+	return RPMRC_FAIL;
+    }
+    if (hdrchkRange(dl_max, dl)) {
+	rasprintf(emsg, _("hdr data: BAD, no. of bytes(%" PRIu32 ") out of range"), dl);
+	return RPMRC_FAIL;
+    }
+    return RPMRC_OK;
+}
+
 rpmRC hdrblobRead(FD_t fd, int magic, int exact_size, rpmTagVal regionTag, hdrblob blob, char **emsg)
 {
     int32_t block[4];
@@ -1898,13 +1938,6 @@ rpmRC hdrblobRead(FD_t fd, int magic, int exact_size, rpmTagVal regionTag, hdrbl
     size_t nb;
     rpmRC rc = RPMRC_FAIL;		/* assume failure */
     int xx;
-    int32_t il_max = HEADER_TAGS_MAX;
-    int32_t dl_max = HEADER_DATA_MAX;
-
-    if (regionTag == RPMTAG_HEADERSIGNATURES) {
-	il_max = 32;
-	dl_max = 64 * 1024 * 1024;
-    }
 
     memset(block, 0, sizeof(block));
     if ((xx = Freadall(fd, bs, blen)) != blen) {
@@ -1917,15 +1950,9 @@ rpmRC hdrblobRead(FD_t fd, int magic, int exact_size, rpmTagVal regionTag, hdrbl
 	goto exit;
     }
     il = ntohl(block[2]);
-    if (hdrchkRange(il_max, il)) {
-	rasprintf(emsg, _("hdr tags: BAD, no. of tags(%d) out of range"), il);
-	goto exit;
-    }
     dl = ntohl(block[3]);
-    if (hdrchkRange(dl_max, dl)) {
-	rasprintf(emsg, _("hdr data: BAD, no. of bytes(%d) out of range"), dl);
+    if (hdrblobVerifyLengths(regionTag, il, dl, emsg))
 	goto exit;
-    }
 
     nb = (il * sizeof(struct entryInfo_s)) + dl;
     uc = sizeof(il) + sizeof(dl) + nb;
@@ -1969,11 +1996,18 @@ rpmRC hdrblobInit(const void *uh, size_t uc,
 		struct hdrblob_s *blob, char **emsg)
 {
     rpmRC rc = RPMRC_FAIL;
-
     memset(blob, 0, sizeof(*blob));
+    if (uc && uc < 8) {
+	rasprintf(emsg, _("hdr length: BAD"));
+	goto exit;
+    }
+
     blob->ei = (int32_t *) uh; /* discards const */
-    blob->il = ntohl(blob->ei[0]);
-    blob->dl = ntohl(blob->ei[1]);
+    blob->il = ntohl((uint32_t)(blob->ei[0]));
+    blob->dl = ntohl((uint32_t)(blob->ei[1]));
+    if (hdrblobVerifyLengths(regionTag, blob->il, blob->dl, emsg) != RPMRC_OK)
+	goto exit;
+
     blob->pe = (entryInfo) &(blob->ei[2]);
     blob->pvlen = sizeof(blob->il) + sizeof(blob->dl) +
 		  (blob->il * sizeof(*blob->pe)) + blob->dl;

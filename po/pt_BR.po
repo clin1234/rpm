@@ -4,13 +4,14 @@
 #
 # Translators:
 # José Lemos Neto <lemosjosex@protonmail.com>, 2020.
+# Fábio Rodrigues Ribeiro <farribeiro@gmail.com>, 2021.
 msgid ""
 msgstr ""
 "Project-Id-Version: PACKAGE VERSION\n"
 "Report-Msgid-Bugs-To: rpm-maint@lists.rpm.org\n"
 "POT-Creation-Date: 2020-08-20 13:58+0300\n"
-"PO-Revision-Date: 2020-08-25 20:29+0000\n"
-"Last-Translator: José Lemos Neto <lemosjosex@protonmail.com>\n"
+"PO-Revision-Date: 2021-02-22 12:40+0000\n"
+"Last-Translator: Fábio Rodrigues Ribeiro <farribeiro@gmail.com>\n"
 "Language-Team: Portuguese (Brazil) <https://translate.fedoraproject.org/"
 "projects/rpm/master/pt_BR/>\n"
 "Language: pt_BR\n"
@@ -18,7 +19,7 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=2; plural=n > 1;\n"
-"X-Generator: Weblate 4.2.1\n"
+"X-Generator: Weblate 4.4.2\n"
 
 #, c-format
 msgid "%s: %s\n"
@@ -485,7 +486,7 @@ msgid "<key>"
 msgstr "<chave>"
 
 msgid "prompt for file signing key password"
-msgstr ""
+msgstr "prompt para a senha do arquivo assinalador de chave"
 
 msgid "Signature options:"
 msgstr "Opções de assinatura:"
@@ -648,7 +649,7 @@ msgstr "Ligação simbólica aponta para BuildRoot: %s -> %s\n"
 
 #, c-format
 msgid "Illegal character (0x%x) in filename: %s\n"
-msgstr ""
+msgstr "Caractere ilegal (0x%x) no nome de arquivo: %s\n"
 
 #, c-format
 msgid "Path is outside buildroot: %s\n"
@@ -1012,13 +1013,13 @@ msgstr "%s em: %s\n"
 
 #, c-format
 msgid "Illegal char '%c' (0x%x)"
-msgstr ""
+msgstr "Caractere Ilegal '%c' (0x%x)"
 
 msgid "Possible unexpanded macro"
 msgstr "Possível macro não expandido"
 
 msgid "Illegal sequence \"..\""
-msgstr ""
+msgstr "Sequência ilegal \"..\""
 
 #, c-format
 msgid "line %d: Malformed tag: %s\n"
@@ -1127,7 +1128,7 @@ msgid "Versioned file name not permitted"
 msgstr "nome de arquivo versionado não permitido"
 
 msgid "No rich dependencies allowed for this type"
-msgstr ""
+msgstr "Nenhuma dependência rica é permitida para esse tipo"
 
 msgid "invalid dependency"
 msgstr "dependência inválida"
@@ -1561,11 +1562,13 @@ msgstr "%s criado como %s\n"
 msgid "%s %s: remove failed: %s\n"
 msgstr ""
 
+#, fuzzy
 msgid "directory"
-msgstr ""
+msgstr "diretório"
 
+#, fuzzy
 msgid "file"
-msgstr ""
+msgstr "arquivo"
 
 #, c-format
 msgid "tag[%d]: BAD, tag %d type %d offset %d count %d len %d"
@@ -1620,8 +1623,9 @@ msgstr ""
 msgid "sigh pad(%zd): BAD, read %zd bytes"
 msgstr ""
 
+#, fuzzy
 msgid "signature "
-msgstr ""
+msgstr "assinatura "
 
 #, c-format
 msgid "blob size(%d): BAD, 8 + 16 * il(%d) + dl(%d)"
@@ -1670,7 +1674,7 @@ msgid "} expected in expression"
 msgstr "} esperado na expressão"
 
 msgid ": expected following ? subexpression"
-msgstr ": esperado após a subexpressão ?"
+msgstr ": esperado ? após a subexpressão"
 
 msgid "{ expected after : in expression"
 msgstr "{ esperado após : na expressão"
@@ -1683,7 +1687,7 @@ msgstr "iterador da matriz utilizado com diferentes tamanhos de matrizes"
 
 #, fuzzy, c-format
 msgid "RPM v3 packages are deprecated: %s\n"
-msgstr "linha %d: %s é obsoleto: %s\n"
+msgstr "Os pacotes RPM v3 estão obsoletos: %s\n"
 
 #, c-format
 msgid "failed to load macro file %s\n"
@@ -2660,9 +2664,9 @@ msgstr "o pacote %s é destinado para o sistema operacional %s"
 msgid "package %s is already installed"
 msgstr "o pacote %s já está instalado"
 
-#, fuzzy, c-format
+#, c-format
 msgid "package %s is not installed"
-msgstr "o pacote %s não está instalado\n"
+msgstr "o pacote %s não está instalado"
 
 #, c-format
 msgid "path %s in package %s is not relocatable"
@@ -2945,17 +2949,14 @@ msgstr ""
 msgid "Unable to reset I/O priority: %s"
 msgstr ""
 
-#, fuzzy
 msgid "syntax error while parsing =="
-msgstr "erro de sintaxe ao analisar ==\n"
+msgstr "erro de sintaxe ao analisar =="
 
-#, fuzzy
 msgid "syntax error while parsing &&"
-msgstr "erro de sintaxe ao analisar &&\n"
+msgstr "erro de sintaxe ao analisar &&"
 
-#, fuzzy
 msgid "syntax error while parsing ||"
-msgstr "erro de sintaxe ao analisar ||\n"
+msgstr "erro de sintaxe ao analisar ||"
 
 msgid "macro expansion returned a bare word, please use \"...\""
 msgstr ""
@@ -2978,40 +2979,33 @@ msgstr "(tipo inválido)"
 msgid "bare words are no longer supported, please use \"...\""
 msgstr ""
 
-#, fuzzy
 msgid "parse error in expression"
-msgstr "erro de análise na expressão\n"
+msgstr "erro de análise na expressão"
 
-#, fuzzy
 msgid "unmatched ("
-msgstr "( sem correspondência\n"
+msgstr "sem correspondência ("
 
-#, fuzzy
 msgid "- only on numbers"
-msgstr "- somente em números\n"
+msgstr "- somente em números"
 
 #, fuzzy
 msgid "unexpected end of expression"
 msgstr "| esperado no fim da expressão"
 
-#, fuzzy
 msgid "syntax error in expression"
-msgstr "erro de sintaxe na expressão\n"
+msgstr "erro de sintaxe na expressão"
 
-#, fuzzy
 msgid "types must match"
-msgstr "os tipos devem corresponder\n"
+msgstr "os tipos devem corresponder"
 
 msgid "division by zero"
 msgstr ""
 
-#, fuzzy
 msgid "* and / not supported for strings"
-msgstr "* / não são suportados para strings\n"
+msgstr "* e / não são suportados para strings"
 
-#, fuzzy
 msgid "- not supported for strings"
-msgstr "- não é suportado para strings\n"
+msgstr "- não é suportado para strings"
 
 #, c-format
 msgid "%3d>%*s(empty)\n"
@@ -3023,7 +3017,7 @@ msgstr "%3d<%*s(vazio)\n"
 
 #, fuzzy, c-format
 msgid "Failed to open shell expansion pipe for command: %s: %m \n"
-msgstr "Não foi possível abrir o pipe do tar: %m\n"
+msgstr "Falha ao abrir o pipe de expansão do shell para o comando: %s: %m \n"
 
 #, c-format
 msgid "Macro %%%s has illegal name (%s)\n"
@@ -3184,11 +3178,11 @@ msgstr ""
 
 #, fuzzy, c-format
 msgid "Could not create pipe for signing: %m\n"
-msgstr "Não foi possível criar um pipe para %s: %m\n"
+msgstr "Não foi possível criar um pipe para assinatura: %m\n"
 
 #, fuzzy, c-format
 msgid "Could not set GPG_TTY to stdin: %m\n"
-msgstr "Não foi possível abrir %%files arquivo %s: %m\n"
+msgstr "Não foi possível definir GPG_TTY para stdin: %m\n"
 
 #, c-format
 msgid "Could not exec %s: %s\n"
@@ -3196,7 +3190,7 @@ msgstr "Não foi possível executar %s: %s\n"
 
 #, fuzzy, c-format
 msgid "Could not open pipe for writing: %m\n"
-msgstr "Não foi possível criar um pipe para %s: %m\n"
+msgstr "Não foi possível abrir o pipe para gravação: %m\n"
 
 msgid "Could not write to pipe\n"
 msgstr ""

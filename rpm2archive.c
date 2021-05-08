@@ -7,7 +7,7 @@
 #include <rpm/rpmtag.h>
 #include <rpm/rpmio.h>
 #include <rpm/rpmpgp.h>
-
+#include <rpm/rpmurl.h>
 #include <rpm/rpmts.h>
 
 #include <archive.h>
@@ -18,7 +18,7 @@
 
 #define BUFSIZE (128*1024)
 
-static void fill_archive_entry(struct archive * a, struct archive_entry * entry, rpmfi fi)
+static void fill_archive_entry(struct archive_entry * entry, rpmfi fi)
 {
     archive_entry_clear(entry);
     const char * dn = rpmfiDN(fi);
@@ -119,9 +119,14 @@ static int process_package(rpmts ts, char * filename)
 
     /* create archive */
     a = archive_write_new();
-    archive_write_add_filter_gzip(a);
-    archive_write_set_format_pax_restricted(a);
-
+    if (archive_write_add_filter_gzip(a) != ARCHIVE_OK) {
+	fprintf(stderr, "Error: Could not create gzip output filter\n");
+	exit(EXIT_FAILURE);
+    }
+    if (archive_write_set_format_pax_restricted(a) != ARCHIVE_OK) {
+	fprintf(stderr, "Error: Format pax restricted is not supported\n");
+	exit(EXIT_FAILURE);
+    }
     if (!strcmp(filename, "-")) {
 	if (isatty(STDOUT_FILENO)) {
 	    fprintf(stderr, "Error: refusing to output archive data to a terminal.\n");
@@ -129,10 +134,23 @@ static int process_package(rpmts ts, char * filename)
 	}
 	archive_write_open_fd(a, STDOUT_FILENO);
     } else {
-	char * outname = rstrscat(NULL, filename, ".tgz", NULL);
-	archive_write_open_filename(a, outname);
+	char * outname;
+	if (urlIsURL(filename)) {
+	    const char * fname = strrchr(filename, '/');
+	    if (fname != NULL) {
+		fname++;
+	    } else {
+		fname = filename;
+	    }
+	    outname = rstrscat(NULL, fname, ".tgz", NULL);
+	} else {
+	    outname = rstrscat(NULL, filename, ".tgz", NULL);
+	}
+	if (archive_write_open_filename(a, outname) != ARCHIVE_OK) {
+	    fprintf(stderr, "Error: Can't open output file: %s\n", outname);
+	    exit(EXIT_FAILURE);
+	}
 	_free(outname);
-	// XXX error handling
     }
 
     entry = archive_entry_new();
@@ -150,7 +168,7 @@ static int process_package(rpmts ts, char * filename)
 	rpm_mode_t mode = rpmfiFMode(fi);
 	int nlink = rpmfiFNlink(fi);
 
-	fill_archive_entry(a, entry, fi);
+	fill_archive_entry(entry, fi);
 
 	if (nlink > 1) {
 	    if (rpmfiArchiveHasContent(fi)) {

@@ -347,7 +347,7 @@ rpmts_InitDB(rpmtsObject * s)
 {
     int rc;
 
-    rc = rpmtsInitDB(s->ts, O_RDONLY);
+    rc = rpmtsInitDB(s->ts, 0644);
     if (rc == 0)
 	rc = rpmtsCloseDB(s->ts);
 
@@ -669,10 +669,6 @@ rpmts_Match(rpmtsObject * s, PyObject * args, PyObject * kwds)
 
     if (Key) {
 	if (PyLong_Check(Key)) {
-	    lkey = PyLong_AsLong(Key);
-	    key = (char *)&lkey;
-	    len = sizeof(lkey);
-	} else if (PyLong_Check(Key)) {
 	    lkey = PyLong_AsLong(Key);
 	    key = (char *)&lkey;
 	    len = sizeof(lkey);
