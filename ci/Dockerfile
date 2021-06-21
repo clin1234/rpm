@@ -45,6 +45,7 @@ RUN dnf -y install \
   /usr/bin/gdb-add-index \
   dwz \
   fsverity-utils fsverity-utils-devel \
+  pandoc \
   && dnf clean all
 
 COPY . .
@@ -66,6 +67,6 @@ RUN ./configure \
   --enable-werror
 
 # --enable-werror equivalent for Doxygen
-RUN sed -i -e "/^WARN_AS_ERROR/s/ NO/ YES/g" doc/librpm.doxy.in
+RUN sed -i -e "/^WARN_AS_ERROR/s/ NO/ YES/g" docs/librpm.doxy.in
 
 CMD make -j$(nproc) distcheck TESTSUITEFLAGS=-j$(nproc); rc=$?; find . -name rpmtests.log|xargs cat; exit $rc
